@@ -36,8 +36,9 @@ jobs:
       env:
         GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
+        PYTHONPATH: ${{ github.workspace }}
       run: |
-        python -m scraper.main
+        python scraper/main.py
     
     - name: Upload artifacts
       if: always()
