@@ -1,0 +1,19 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "api/scrape.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/api/scrape",
+      "dest": "api/scrape.py"
+    }
+  ],
+  "env": {
+    "GOOGLE_CREDENTIALS": "@google_credentials",
+    "GOOGLE_SHEET_ID": "@google_sheet_id"
+  }
+}
