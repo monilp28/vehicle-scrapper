@@ -1,5 +1,5 @@
 """Vehicle scraper package"""
-from .vehicle_scraper import UniversalVehicleScraper
+from .vehicle_scraper import VehicleScraper
 from .sheets_uploader import GoogleSheetsUploader
 
-__all__ = ['UniversalVehicleScraper', 'GoogleSheetsUploader']
+__all__ = ['VehicleScraper', 'GoogleSheetsUploader']
