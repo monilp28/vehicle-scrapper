@@ -5,16 +5,16 @@ from urllib.parse import urljoin
 import re
 import json
 import logging
-import os
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
 
 class UniversalVehicleScraper:
     def __init__(self):
         self.base_url = "https://www.reddeertoyota.com"
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         }
         self.session = requests.Session()
         self.session.headers.update(self.headers)
@@ -32,11 +32,12 @@ class UniversalVehicleScraper:
         links = set()
         for link in soup.find_all('a', href=True):
             href = link.get('href')
-            if href and '/inventory/' in href and not any(x in href for x in ['?page=', 'new/', 'used/']):
-                if len(href.split('/')) > 4:
-                    full_url = urljoin(self.base_url, href)
-                    if '?page=' not in full_url:
-                        links.add(full_url)
+            if href and '/inventory/' in href:
+                if not any(x in href for x in ['?page=', '/new/', '/used/']):
+                    if len(href.split('/')) > 4:
+                        full_url = urljoin(self.base_url, href)
+                        if '?' not in full_url:
+                            links.add(full_url)
         return list(links)
     
     def clean_text(self, text):
@@ -44,78 +45,16 @@ class UniversalVehicleScraper:
             return ""
         return ' '.join(text.strip().split())
     
-    def extract_price(self, text):
-        if not text:
-            return ""
-        text = text.replace('$', '').replace(',', '').strip()
-        numbers = re.findall(r'\d+', text)
-        if numbers:
-            prices = [int(n) for n in numbers if len(n) >= 4]
-            if prices:
-                return str(max(prices))
-        return ""
-    
-    def extract_mileage(self, text):
-        if not text:
-            return ""
-        text = text.replace(',', '')
-        match = re.search(r'(\d+)\s*(?:km|miles?)', text, re.IGNORECASE)
-        return match.group(1) if match else ""
-    
-    def extract_year(self, text):
-        if not text:
-            return ""
-        match = re.search(r'\b(19\d{2}|20[0-3]\d)\b', text)
-        return match.group(1) if match else ""
-    
-    def parse_vehicle_title(self, title):
-        result = {'year': '', 'make': '', 'model': '', 'trim': ''}
-        if not title:
-            return result
-        
-        result['year'] = self.extract_year(title)
-        title_clean = re.sub(r'\b(19\d{2}|20[0-3]\d)\b', '', title).strip()
-        words = title_clean.split()
-        
-        if not words:
-            return result
-        
-        makes = {'Toyota', 'Lexus', 'Honda', 'Acura', 'Nissan', 'Ford', 'Chevrolet', 
-                'GMC', 'Dodge', 'Ram', 'Jeep', 'Chrysler', 'Mazda', 'Subaru', 'Hyundai',
-                'Kia', 'Volkswagen', 'Audi', 'BMW', 'Mercedes', 'Land Rover', 'Range Rover'}
-        
-        make_idx = -1
-        for i, word in enumerate(words):
-            if word in makes:
-                result['make'] = word
-                make_idx = i
-                break
-        
-        if make_idx != -1 and make_idx + 1 < len(words):
-            remaining = words[make_idx + 1:]
-            trims = {'LE', 'SE', 'XLE', 'XSE', 'Limited', 'Platinum', 'SR5', 'TRD',
-                    'LX', 'EX', 'Touring', 'Sport', 'Hybrid', 'AWD', 'FWD', '4WD',
-                    'North', 'Progressiv', 'Comfortline', 'Dynamic', 'HSE'}
-            
-            trim_idx = len(remaining)
-            for i, word in enumerate(remaining):
-                if word in trims:
-                    trim_idx = i
-                    break
-            
-            result['model'] = ' '.join(remaining[:trim_idx]) if trim_idx > 0 else remaining[0]
-            result['trim'] = ' '.join(remaining[trim_idx:]) if trim_idx < len(remaining) else ''
-        
-        return result
-    
     def scrape_vehicle_detail(self, url):
-        logger.info(f"\n{'='*80}")
-        logger.info(f"Scraping: {url}")
-        soup = self.get_page(url)
+        logger.info(f"\n{'='*100}")
+        logger.info(f"SCRAPING: {url}")
+        logger.info(f"{'='*100}")
         
+        soup = self.get_page(url)
         if not soup:
             return None
         
+        # Initialize data
         data = {
             'title': '', 'id / stock-#': '', 'price': '', 'condition': '',
             'feed label': '', 'body style': '', 'brand': '', 'certified pre-owned': '',
@@ -125,147 +64,324 @@ class UniversalVehicleScraper:
             'vin': '', 'year': ''
         }
         
-        # Title
-        h1 = soup.find('h1')
-        if h1:
-            data['title'] = self.clean_text(h1.get_text())
-            logger.info(f"Title: {data['title']}")
+        page_html = str(soup)
+        page_text = soup.get_text()
         
-        # Parse title
-        parsed = self.parse_vehicle_title(data['title'])
-        data['year'] = parsed['year']
-        data['brand'] = parsed['make']
-        data['model'] = parsed['model']
-        data['trim / sub-model'] = parsed['trim']
+        # ===== 1. TITLE =====
+        logger.info("\n[TITLE]")
+        title_elem = soup.find('h1')
+        if title_elem:
+            data['title'] = self.clean_text(title_elem.get_text())
+            logger.info(f"  ✓ {data['title']}")
         
-        # Condition from URL
-        if '/new/' in url:
-            data['condition'] = 'new'
-        elif '/used/' in url:
-            data['condition'] = 'used'
+        # ===== 2. PARSE YEAR, MAKE, MODEL, TRIM FROM TITLE =====
+        logger.info("\n[PARSING TITLE]")
+        title = data['title']
         
-        # Stock number
-        for elem in soup.find_all(['span', 'div', 'p']):
-            text = elem.get_text()
-            if 'stock' in text.lower() and len(text) < 100:
-                match = re.search(r'(?:Stock|#)\s*:?\s*([A-Z0-9-]+)', text, re.IGNORECASE)
-                if match:
-                    data['id / stock-#'] = match.group(1)
-                    break
+        # Extract year
+        year_match = re.search(r'\b(20\d{2})\b', title)
+        if year_match:
+            data['year'] = year_match.group(1)
+            logger.info(f"  ✓ Year: {data['year']}")
         
-        # VIN
-        for elem in soup.find_all(['span', 'div', 'p']):
-            text = elem.get_text()
-            if 'vin' in text.lower():
-                match = re.search(r'([A-HJ-NPR-Z0-9]{17})', text, re.IGNORECASE)
-                if match:
-                    data['vin'] = match.group(1).upper()
-                    break
+        # Extract make
+        makes = ['Toyota', 'Lexus', 'Honda', 'Acura', 'Nissan', 'Infiniti', 'Mazda', 'Subaru',
+                'Ford', 'Chevrolet', 'GMC', 'Dodge', 'Ram', 'Jeep', 'Chrysler', 'Hyundai',
+                'Kia', 'Volkswagen', 'Audi', 'BMW', 'Mercedes', 'Mercedes-Benz', 'Land Rover',
+                'Range Rover', 'Porsche', 'Volvo', 'Jaguar', 'Alfa Romeo', 'Maserati']
         
-        # Prices
-        price_elements = []
-        for elem in soup.find_all(['span', 'div', 'p', 'strong']):
-            text = elem.get_text()
-            if '$' in text:
-                price_elements.append(self.clean_text(text))
-        
-        logger.info(f"Found {len(price_elements)} price elements")
-        for pe in price_elements[:5]:
-            logger.info(f"  Price elem: {pe[:80]}")
-        
-        # Selling price
-        for pe in price_elements:
-            if 'msrp' not in pe.lower() and 'retail' not in pe.lower():
-                price = self.extract_price(pe)
-                if price and int(price) > 5000:
-                    data['price'] = price
-                    logger.info(f"Price: ${price}")
-                    break
-        
-        # MSRP
-        for pe in price_elements:
-            if 'msrp' in pe.lower() or 'retail' in pe.lower():
-                msrp = self.extract_price(pe)
-                if msrp and int(msrp) > 5000:
-                    data['vehicle MSRP'] = msrp
-                    logger.info(f"MSRP: ${msrp}")
-                    break
-        
-        # Mileage
-        for elem in soup.find_all(['span', 'div', 'p']):
-            text = elem.get_text()
-            if 'km' in text.lower() and len(text) < 100:
-                mileage = self.extract_mileage(text)
-                if mileage:
-                    data['mileage'] = mileage
-                    break
-        
-        # Color
-        for elem in soup.find_all(['span', 'div', 'p', 'dd']):
-            text = elem.get_text()
-            if 'exterior' in text.lower() or 'color' in text.lower():
-                if len(text) < 100:
-                    color = self.clean_text(text)
-                    color = re.sub(r'(?i)(exterior|color)[:\s]*', '', color)
-                    if color and len(color) < 50:
-                        data['color'] = color
-                        break
-        
-        # Engine
-        for elem in soup.find_all(['span', 'div', 'p', 'dd']):
-            text = elem.get_text()
-            if 'engine' in text.lower() and len(text) < 200:
-                engine = self.clean_text(text)
-                engine = re.sub(r'(?i)engine[:\s]*', '', engine)
-                if len(engine) > 3:
-                    data['engine'] = engine
-                    break
-        
-        # Body style - infer from model
-        model_lower = data['model'].lower()
-        if any(x in model_lower for x in ['tundra', 'tacoma', 'f-150']):
-            data['body style'] = 'Pickup Truck'
-        elif any(x in model_lower for x in ['rav4', 'highlander', 'escape', 'cr-v', '4runner']):
-            data['body style'] = 'SUV'
-        elif any(x in model_lower for x in ['camry', 'corolla', 'accord', 'civic']):
-            data['body style'] = 'Sedan'
-        elif any(x in model_lower for x in ['sienna', 'pacifica']):
-            data['body style'] = 'Minivan'
-        
-        # Description
-        for elem in soup.find_all(['div', 'p']):
-            classes = ' '.join(elem.get('class', []))
-            if 'description' in classes.lower() or 'overview' in classes.lower():
-                desc = self.clean_text(elem.get_text())
-                if len(desc) > 100:
-                    data['description'] = desc[:2000]
-                    break
-        
-        # Options
-        options = []
-        for ul in soup.find_all('ul'):
-            for li in ul.find_all('li'):
-                opt = self.clean_text(li.get_text())
-                if opt and len(opt) < 100:
-                    options.append(opt)
-        
-        if options:
-            data['vehicle option'] = '; '.join(options[:50])
-        
-        # CPO
-        page_text = soup.get_text().lower()
-        if 'certified pre-owned' in page_text:
-            data['certified pre-owned'] = 'yes'
-        
-        # Image
-        for img in soup.find_all('img'):
-            src = img.get('src')
-            if src and 'logo' not in src.lower():
-                data['image link'] = urljoin(self.base_url, src)
+        for make in makes:
+            if make.lower() in title.lower():
+                data['brand'] = make
+                logger.info(f"  ✓ Make: {data['brand']}")
                 break
         
-        logger.info(f"Stock: {data['id / stock-#']}, Price: {data['price']}, Condition: {data['condition']}")
-        logger.info(f"{'='*80}")
+        # Extract model and trim
+        title_parts = title.split()
+        year_idx = -1
+        make_idx = -1
+        
+        for i, part in enumerate(title_parts):
+            if part == data['year']:
+                year_idx = i
+            if data['brand'] and part.lower() in data['brand'].lower():
+                make_idx = i
+        
+        if make_idx >= 0 and make_idx + 1 < len(title_parts):
+            remaining = title_parts[make_idx + 1:]
+            
+            # Common trim indicators
+            trim_words = ['LE', 'SE', 'XLE', 'XSE', 'Limited', 'Platinum', 'SR5', 'TRD',
+                         'LX', 'EX', 'Touring', 'Sport', 'Hybrid', 'AWD', '4WD', 'FWD',
+                         'North', 'Progressiv', 'Comfortline', 'Dynamic', 'HSE', 'Premium',
+                         'Upgrade', 'Technology', 'Off-Road', 'Pro', 'Trail', 'Adventure',
+                         'Nightshade', 'Black Diamond', 'A-Spec', 'Type R', 'Si', 'Nismo']
+            
+            # Find where trim starts
+            trim_start = len(remaining)
+            for i, word in enumerate(remaining):
+                if word in trim_words:
+                    trim_start = i
+                    break
+            
+            # Everything before trim is model
+            if trim_start > 0:
+                # Check for multi-word models
+                if trim_start >= 2:
+                    two_word = f"{remaining[0]} {remaining[1]}"
+                    if two_word in ['Grand Highlander', 'Crown Signia', 'Grand Cherokee', 
+                                   'Range Rover', 'Land Cruiser', 'Santa Fe']:
+                        data['model'] = two_word
+                        data['trim / sub-model'] = ' '.join(remaining[2:]) if len(remaining) > 2 else ''
+                    else:
+                        data['model'] = remaining[0]
+                        data['trim / sub-model'] = ' '.join(remaining[1:])
+                else:
+                    data['model'] = remaining[0]
+                    data['trim / sub-model'] = ' '.join(remaining[1:])
+            else:
+                # No trim found
+                data['model'] = ' '.join(remaining[:2]) if len(remaining) >= 2 else remaining[0] if remaining else ''
+        
+        logger.info(f"  ✓ Model: {data['model']}")
+        logger.info(f"  ✓ Trim: {data['trim / sub-model']}")
+        
+        # ===== 3. CONDITION =====
+        logger.info("\n[CONDITION]")
+        if '/new/' in url or '/inventory/new/' in url:
+            data['condition'] = 'new'
+            logger.info(f"  ✓ new (from URL)")
+        elif '/used/' in url or '/inventory/used/' in url:
+            data['condition'] = 'used'
+            logger.info(f"  ✓ used (from URL)")
+        else:
+            # Check page content
+            if 'new vehicle' in page_text.lower() or 'brand new' in page_text.lower():
+                data['condition'] = 'new'
+                logger.info(f"  ✓ new (from content)")
+            elif 'used vehicle' in page_text.lower() or 'pre-owned vehicle' in page_text.lower():
+                data['condition'] = 'used'
+                logger.info(f"  ✓ used (from content)")
+        
+        # ===== 4. STOCK NUMBER =====
+        logger.info("\n[STOCK NUMBER]")
+        # Try multiple patterns
+        stock_patterns = [
+            (r'Stock\s*#?\s*:?\s*([A-Z0-9-]+)', 'Stock #'),
+            (r'Stock\s+Number\s*:?\s*([A-Z0-9-]+)', 'Stock Number'),
+            (r'Stk\s*#?\s*:?\s*([A-Z0-9-]+)', 'Stk #'),
+        ]
+        
+        for pattern, label in stock_patterns:
+            match = re.search(pattern, page_text, re.IGNORECASE)
+            if match:
+                data['id / stock-#'] = match.group(1).strip()
+                logger.info(f"  ✓ {data['id / stock-#']} (via {label})")
+                break
+        
+        # ===== 5. VIN =====
+        logger.info("\n[VIN]")
+        vin_match = re.search(r'\bVIN\s*:?\s*([A-HJ-NPR-Z0-9]{17})\b', page_text, re.IGNORECASE)
+        if vin_match:
+            data['vin'] = vin_match.group(1).upper()
+            logger.info(f"  ✓ {data['vin']}")
+        else:
+            # Try finding 17-char VIN without label
+            vin_match = re.search(r'\b([A-HJ-NPR-Z0-9]{17})\b', page_text)
+            if vin_match:
+                data['vin'] = vin_match.group(1).upper()
+                logger.info(f"  ✓ {data['vin']} (found without label)")
+        
+        # ===== 6. PRICES =====
+        logger.info("\n[PRICES]")
+        
+        # Find all elements with dollar signs
+        price_elements = []
+        for elem in soup.find_all(text=re.compile(r'\$[\d,]+')):
+            parent = elem.parent
+            text = self.clean_text(parent.get_text())
+            if text and len(text) < 200:
+                price_elements.append(text)
+        
+        logger.info(f"  Found {len(price_elements)} price elements")
+        
+        # Extract selling price (not MSRP)
+        for price_text in price_elements:
+            if 'msrp' not in price_text.lower() and 'retail' not in price_text.lower():
+                numbers = re.findall(r'\$?([\d,]+)', price_text.replace(',', ''))
+                for num in numbers:
+                    if len(num) >= 5:
+                        data['price'] = num
+                        logger.info(f"  ✓ Selling Price: ${num}")
+                        break
+                if data['price']:
+                    break
+        
+        # Extract MSRP
+        for price_text in price_elements:
+            if 'msrp' in price_text.lower() or 'retail' in price_text.lower():
+                numbers = re.findall(r'\$?([\d,]+)', price_text.replace(',', ''))
+                for num in numbers:
+                    if len(num) >= 5:
+                        data['vehicle MSRP'] = num
+                        logger.info(f"  ✓ MSRP: ${num}")
+                        break
+                if data['vehicle MSRP']:
+                    break
+        
+        # Extract All-In Price
+        for price_text in price_elements:
+            if any(kw in price_text.lower() for kw in ['all-in', 'all in', 'total', 'out the door']):
+                numbers = re.findall(r'\$?([\d,]+)', price_text.replace(',', ''))
+                for num in numbers:
+                    if len(num) >= 5:
+                        data['vehicle all in price'] = num
+                        logger.info(f"  ✓ All-In: ${num}")
+                        break
+                if data['vehicle all in price']:
+                    break
+        
+        # ===== 7. MILEAGE =====
+        logger.info("\n[MILEAGE]")
+        mileage_match = re.search(r'([\d,]+)\s*(?:km|KM|Km)', page_text)
+        if mileage_match:
+            data['mileage'] = mileage_match.group(1).replace(',', '')
+            logger.info(f"  ✓ {data['mileage']} km")
+        
+        # ===== 8. COLOR =====
+        logger.info("\n[COLOR]")
+        color_patterns = [
+            r'Exterior\s*:?\s*([A-Za-z\s]+?)(?:\n|,|$)',
+            r'Color\s*:?\s*([A-Za-z\s]+?)(?:\n|,|$)',
+            r'Colour\s*:?\s*([A-Za-z\s]+?)(?:\n|,|$)',
+        ]
+        
+        for pattern in color_patterns:
+            match = re.search(pattern, page_text, re.IGNORECASE)
+            if match:
+                color = match.group(1).strip()
+                if len(color) < 50 and len(color) > 2:
+                    data['color'] = color
+                    logger.info(f"  ✓ {color}")
+                    break
+        
+        # ===== 9. ENGINE =====
+        logger.info("\n[ENGINE]")
+        engine_match = re.search(r'Engine\s*:?\s*([^\n]{10,100})', page_text, re.IGNORECASE)
+        if engine_match:
+            data['engine'] = self.clean_text(engine_match.group(1))
+            logger.info(f"  ✓ {data['engine']}")
+        
+        # ===== 10. BODY STYLE =====
+        logger.info("\n[BODY STYLE]")
+        
+        # Try to find explicit body style
+        body_match = re.search(r'Body\s*(?:Style|Type)?\s*:?\s*([A-Za-z\s]+?)(?:\n|,|$)', page_text, re.IGNORECASE)
+        if body_match:
+            data['body style'] = self.clean_text(body_match.group(1))
+            logger.info(f"  ✓ {data['body style']} (explicit)")
+        else:
+            # Infer from model
+            model_lower = data['model'].lower()
+            if any(x in model_lower for x in ['tundra', 'tacoma', 'f-150', 'silverado', 'ram', 'frontier', 'ranger']):
+                data['body style'] = 'Pickup Truck'
+            elif any(x in model_lower for x in ['rav4', 'highlander', 'escape', 'cr-v', '4runner', 'pilot', 'explorer', 'tucson', 'santa fe', 'cx-5', 'outback', 'forester']):
+                data['body style'] = 'SUV'
+            elif any(x in model_lower for x in ['camry', 'corolla', 'accord', 'civic', 'altima', 'sentra', 'elantra', 'sonata', 'mazda3', 'mazda6']):
+                data['body style'] = 'Sedan'
+            elif any(x in model_lower for x in ['sienna', 'pacifica', 'odyssey', 'caravan']):
+                data['body style'] = 'Minivan'
+            elif any(x in model_lower for x in ['bronco', 'wrangler', '4runner']):
+                data['body style'] = 'SUV'
+            
+            if data['body style']:
+                logger.info(f"  ✓ {data['body style']} (inferred from model)")
+        
+        # ===== 11. DESCRIPTION =====
+        logger.info("\n[DESCRIPTION]")
+        
+        # Look for description in common containers
+        desc_found = False
+        for elem in soup.find_all(['div', 'section', 'p']):
+            classes = ' '.join(elem.get('class', [])).lower()
+            elem_id = elem.get('id', '').lower()
+            
+            if any(kw in classes or kw in elem_id for kw in ['description', 'overview', 'details', 'comments', 'about']):
+                text = self.clean_text(elem.get_text())
+                if len(text) > 100 and len(text) < 5000:
+                    data['description'] = text
+                    logger.info(f"  ✓ Found ({len(text)} chars)")
+                    desc_found = True
+                    break
+        
+        if not desc_found:
+            logger.info(f"  ⚠ Not found")
+        
+        # ===== 12. VEHICLE OPTIONS/FEATURES =====
+        logger.info("\n[VEHICLE OPTIONS]")
+        
+        options = []
+        # Method 1: Look for unordered/ordered lists
+        for ul in soup.find_all(['ul', 'ol']):
+            parent = ul.find_parent(['div', 'section'])
+            if parent:
+                parent_text = parent.get_text()[:300].lower()
+                if any(kw in parent_text for kw in ['feature', 'option', 'equipment', 'include', 'standard', 'package']):
+                    for li in ul.find_all('li'):
+                        opt = self.clean_text(li.get_text())
+                        if opt and 3 < len(opt) < 150:
+                            options.append(opt)
+        
+        # Method 2: Look for definition lists
+        if not options:
+            for dl in soup.find_all('dl'):
+                for dt, dd in zip(dl.find_all('dt'), dl.find_all('dd')):
+                    opt = f"{self.clean_text(dt.get_text())}: {self.clean_text(dd.get_text())}"
+                    if len(opt) < 150:
+                        options.append(opt)
+        
+        if options:
+            data['vehicle option'] = '; '.join(options[:100])
+            logger.info(f"  ✓ Found {len(options)} options")
+        else:
+            logger.info(f"  ⚠ Not found")
+        
+        # ===== 13. CERTIFIED PRE-OWNED =====
+        logger.info("\n[CERTIFIED PRE-OWNED]")
+        
+        if re.search(r'certified\s+pre-owned', page_text, re.IGNORECASE):
+            data['certified pre-owned'] = 'yes'
+            logger.info(f"  ✓ Yes")
+        elif re.search(r'\bCPO\b', page_text):
+            data['certified pre-owned'] = 'yes'
+            logger.info(f"  ✓ Yes (CPO)")
+        else:
+            logger.info(f"  ✓ No")
+        
+        # ===== 14. IMAGE =====
+        logger.info("\n[IMAGE]")
+        
+        for img in soup.find_all('img'):
+            src = img.get('src') or img.get('data-src') or img.get('data-lazy')
+            if src:
+                if not any(skip in src.lower() for skip in ['logo', 'icon', 'badge', 'button']):
+                    data['image link'] = urljoin(self.base_url, src)
+                    logger.info(f"  ✓ Found")
+                    break
+        
+        # ===== SUMMARY =====
+        logger.info(f"\n{'='*100}")
+        logger.info("SUMMARY:")
+        logger.info(f"  Title: {data['title']}")
+        logger.info(f"  Year/Make/Model: {data['year']} {data['brand']} {data['model']} {data['trim / sub-model']}")
+        logger.info(f"  Stock: {data['id / stock-#']} | VIN: {data['vin']}")
+        logger.info(f"  Price: ${data['price']} | MSRP: ${data['vehicle MSRP']}")
+        logger.info(f"  Condition: {data['condition']} | Body: {data['body style']}")
+        logger.info(f"  Mileage: {data['mileage']} | Color: {data['color']}")
+        logger.info(f"  Description: {'✓' if data['description'] else '✗'}")
+        logger.info(f"  Options: {'✓' if data['vehicle option'] else '✗'}")
+        logger.info(f"  CPO: {data['certified pre-owned']}")
+        logger.info(f"{'='*100}\n")
         
         return data
     
@@ -273,21 +389,25 @@ class UniversalVehicleScraper:
         all_vehicles = []
         all_links = set()
         
-        logger.info("Collecting vehicle links...")
+        logger.info("\n" + "="*100)
+        logger.info("COLLECTING VEHICLE LINKS")
+        logger.info("="*100)
+        
         for url in urls:
-            logger.info(f"Scanning: {url}")
+            logger.info(f"\nScanning: {url}")
             soup = self.get_page(url)
             if soup:
                 links = self.extract_vehicle_links(soup)
                 all_links.update(links)
-                logger.info(f"Found {len(links)} vehicles")
+                logger.info(f"  Found {len(links)} vehicles")
             time.sleep(1)
         
-        logger.info(f"\nTotal unique vehicles: {len(all_links)}")
+        logger.info(f"\n{'='*100}")
+        logger.info(f"TOTAL UNIQUE VEHICLES: {len(all_links)}")
+        logger.info(f"{'='*100}\n")
         
-        logger.info("\nScraping vehicle pages...")
         for i, vdp_url in enumerate(sorted(all_links), 1):
-            logger.info(f"\nProgress: {i}/{len(all_links)}")
+            logger.info(f"\nPROGRESS: {i}/{len(all_links)}")
             vehicle = self.scrape_vehicle_detail(vdp_url)
             if vehicle:
                 all_vehicles.append(vehicle)
