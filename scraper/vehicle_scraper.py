@@ -160,7 +160,7 @@ class UniversalVehicleScraper:
                 '2WD', '4x4', '4x2', 'Manual', 'Automatic', 'CVT', 'Crew', 'Cab',
                 'Double', 'Extended', 'SuperCrew', 'SuperCab', 'Quad', 'Access',
                 'Dynamic', 'HSE', 'Autobiography', 'First', 'Velar', 'Evoque',
-                'Black Diamond', 'Northline', 'Max'
+                'Black Diamond', 'Northline', 'Max', 'North', 'Progressiv'
             }
             
             trim_start_index = len(remaining_words)
@@ -182,7 +182,7 @@ class UniversalVehicleScraper:
                     two_word_model = f"{remaining_words[0]} {remaining_words[1]}"
                     multi_word_models = ['Grand Highlander', 'Range Rover', 'Land Cruiser', 
                                         'Grand Cherokee', 'Santa Fe', 'Civic Type',
-                                        'Model S', 'Model 3', 'Model X', 'Model Y']
+                                        'Model S', 'Model 3', 'Model X', 'Model Y', 'Crown Signia']
                     if any(two_word_model.lower() == model.lower() for model in multi_word_models):
                         result['model'] = two_word_model
                         trim_start_index = 2
@@ -199,7 +199,7 @@ class UniversalVehicleScraper:
         return result
     
     def scrape_vehicle_detail(self, url):
-        """Scrape individual vehicle detail page"""
+        """Scrape individual vehicle detail page with comprehensive extraction"""
         logger.info(f"Scraping VDP: {url}")
         soup = self.get_page(url)
         
@@ -217,96 +217,277 @@ class UniversalVehicleScraper:
         
         page_text = soup.get_text()
         
-        # Extract title
-        for selector in ['h1', 'h1.vehicle-title', 'h1.vdp-title', '.vehicle-info h1']:
+        # 1. EXTRACT TITLE
+        for selector in ['h1', 'h1.vehicle-title', 'h1.vdp-title', '.vehicle-info h1', 'h1.title']:
             elem = soup.select_one(selector)
             if elem:
                 vehicle_data['title'] = self.clean_text(elem.get_text())
+                logger.info(f"  Title: {vehicle_data['title']}")
                 break
         
-        # Parse title
+        # 2. PARSE TITLE for year, make, model, trim
         parsed = self.parse_vehicle_title(vehicle_data['title'])
         vehicle_data['year'] = parsed['year']
         vehicle_data['brand'] = parsed['make']
         vehicle_data['model'] = parsed['model']
         vehicle_data['trim / sub-model'] = parsed['trim']
         
-        # Extract stock, VIN, prices, etc. (same as before)
-        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td']):
+        # 3. EXTRACT CONDITION - Multiple methods
+        if '/inventory/new/' in url or '/new/' in url:
+            vehicle_data['condition'] = 'new'
+        elif '/inventory/used/' in url or '/used/' in url:
+            vehicle_data['condition'] = 'used'
+        
+        # Also check badge/label elements
+        for elem in soup.find_all(['span', 'div', 'badge', 'label']):
+            text = elem.get_text().lower()
+            classes = ' '.join(elem.get('class', [])).lower()
+            if 'new' in text or 'new' in classes:
+                if 'vehicle' in text or 'inventory' in classes:
+                    vehicle_data['condition'] = 'new'
+                    break
+            elif 'used' in text or 'pre-owned' in text:
+                vehicle_data['condition'] = 'used'
+                break
+        
+        logger.info(f"  Condition: {vehicle_data['condition']}")
+        
+        # 4. EXTRACT STOCK NUMBER - Enhanced
+        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td', 'dt', 'dd', 'strong']):
             text = elem.get_text()
             if 'stock' in text.lower():
-                match = re.search(r'(?:Stock|#)\s*[:#]?\s*([A-Z0-9-]+)', text, re.IGNORECASE)
+                match = re.search(r'(?:Stock|Stk|Stock\s*#|Stock\s*Number)[:\s#]*([A-Z0-9-]+)', text, re.IGNORECASE)
                 if match:
                     vehicle_data['id / stock-#'] = match.group(1).strip()
+                    logger.info(f"  Stock #: {vehicle_data['id / stock-#']}")
                     break
         
-        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td']):
+        # 5. EXTRACT VIN - Enhanced
+        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td', 'dt', 'dd', 'strong']):
             text = elem.get_text()
-            if 'vin' in text.lower():
+            if 'vin' in text.lower() or len(text.strip()) == 17:
                 match = re.search(r'([A-HJ-NPR-Z0-9]{17})', text, re.IGNORECASE)
                 if match:
                     vehicle_data['vin'] = match.group(1).upper()
+                    logger.info(f"  VIN: {vehicle_data['vin']}")
                     break
         
-        # Price extraction
-        for elem in soup.find_all(['span', 'div', 'p', 'strong', 'h2', 'h3']):
+        # 6. EXTRACT PRICES - Comprehensive approach
+        all_dollar_elements = []
+        for elem in soup.find_all(['span', 'div', 'p', 'strong', 'h2', 'h3', 'h4', 'td', 'dd', 'li']):
             text = elem.get_text()
-            if '$' in text and 'price' in text.lower() and 'msrp' not in text.lower():
-                price = self.extract_price(text)
+            if '$' in text:
+                all_dollar_elements.append({
+                    'text': text,
+                    'clean': self.clean_text(text),
+                    'class': ' '.join(elem.get('class', [])),
+                    'id': elem.get('id', '')
+                })
+        
+        # Extract SELLING PRICE
+        for item in all_dollar_elements:
+            text_lower = item['clean'].lower()
+            # Skip MSRP
+            if 'msrp' in text_lower or 'retail' in text_lower:
+                continue
+            # Look for selling price keywords
+            if any(kw in text_lower for kw in ['our price', 'sale price', 'price:', 'selling price', 'internet price']):
+                price = self.extract_price(item['clean'])
                 if price and int(price) > 5000:
                     vehicle_data['price'] = price
                     break
         
-        # MSRP
-        for elem in soup.find_all(['span', 'div', 'p', 'strong']):
-            text = elem.get_text()
-            if 'msrp' in text.lower():
-                msrp = self.extract_price(text)
+        # If not found, take first reasonable $ amount (not MSRP)
+        if not vehicle_data['price']:
+            for item in all_dollar_elements:
+                if 'msrp' not in item['clean'].lower():
+                    price = self.extract_price(item['clean'])
+                    if price and int(price) > 5000:
+                        vehicle_data['price'] = price
+                        break
+        
+        # Extract MSRP
+        for item in all_dollar_elements:
+            text_lower = item['clean'].lower()
+            if 'msrp' in text_lower or 'manufacturer' in text_lower or 'retail' in text_lower:
+                msrp = self.extract_price(item['clean'])
                 if msrp and int(msrp) > 5000:
                     vehicle_data['vehicle MSRP'] = msrp
                     break
         
-        # Mileage
-        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td']):
+        # Extract ALL-IN PRICE
+        for item in all_dollar_elements:
+            text_lower = item['clean'].lower()
+            if any(kw in text_lower for kw in ['all-in', 'all in', 'total', 'out the door', 'drive away']):
+                all_in = self.extract_price(item['clean'])
+                if all_in and int(all_in) > 5000:
+                    vehicle_data['vehicle all in price'] = all_in
+                    break
+        
+        logger.info(f"  Price: {vehicle_data['price']}, MSRP: {vehicle_data['vehicle MSRP']}, All-in: {vehicle_data['vehicle all in price']}")
+        
+        # 7. EXTRACT MILEAGE
+        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td', 'dt', 'dd']):
             text = elem.get_text()
-            if 'km' in text.lower() or 'mileage' in text.lower():
+            if 'km' in text.lower() or 'mileage' in text.lower() or 'odometer' in text.lower():
                 mileage = self.extract_mileage(text)
                 if mileage:
                     vehicle_data['mileage'] = mileage
+                    logger.info(f"  Mileage: {mileage}")
                     break
         
-        # Condition
-        if '/inventory/new/' in url:
-            vehicle_data['condition'] = 'new'
-        elif '/inventory/used/' in url:
-            vehicle_data['condition'] = 'used'
-        
-        # Color
-        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td', 'dd']):
+        # 8. EXTRACT COLOR
+        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td', 'dt', 'dd']):
             text = elem.get_text()
-            if 'exterior' in text.lower() or 'color' in text.lower():
+            if any(kw in text.lower() for kw in ['exterior', 'color', 'colour']):
                 color = self.clean_text(text)
                 color = re.sub(r'(?i)(exterior|color|colour|paint)[:\s]*', '', color)
-                if color and len(color) < 50:
+                if color and len(color) < 50 and len(color) > 2:
                     vehicle_data['color'] = color
+                    logger.info(f"  Color: {color}")
                     break
         
-        # Engine
-        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td', 'dd']):
+        # 9. EXTRACT ENGINE
+        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td', 'dt', 'dd']):
             text = elem.get_text()
             if 'engine' in text.lower() and len(text) < 200:
                 engine = self.clean_text(text)
                 engine = re.sub(r'(?i)engine[:\s]*', '', engine)
                 if engine and len(engine) > 3:
                     vehicle_data['engine'] = engine
+                    logger.info(f"  Engine: {engine}")
                     break
         
-        # Image
+        # 10. EXTRACT BODY STYLE - Multiple approaches
+        # Method 1: Look in specs/features
+        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td', 'dt', 'dd']):
+            text = elem.get_text().lower()
+            if 'body' in text or 'type' in text:
+                body = self.clean_text(elem.get_text())
+                body = re.sub(r'(?i)(body|body style|type|vehicle type)[:\s]*', '', body)
+                # Validate it's actually a body style
+                valid_styles = ['sedan', 'suv', 'truck', 'coupe', 'hatchback', 'wagon', 
+                               'van', 'minivan', 'convertible', 'crossover', 'pickup', 'crew cab']
+                if any(style in body.lower() for style in valid_styles):
+                    vehicle_data['body style'] = body
+                    logger.info(f"  Body Style: {body}")
+                    break
+        
+        # Method 2: Infer from model name
+        if not vehicle_data['body style']:
+            model_lower = vehicle_data['model'].lower()
+            if 'truck' in model_lower or 'tundra' in model_lower or 'tacoma' in model_lower or 'f-150' in model_lower:
+                vehicle_data['body style'] = 'Pickup Truck'
+            elif 'suv' in model_lower or 'rav4' in model_lower or 'highlander' in model_lower or 'escape' in model_lower:
+                vehicle_data['body style'] = 'SUV'
+            elif 'sedan' in model_lower or 'camry' in model_lower or 'corolla' in model_lower or 'accord' in model_lower:
+                vehicle_data['body style'] = 'Sedan'
+            elif 'van' in model_lower or 'sienna' in model_lower or 'pacifica' in model_lower:
+                vehicle_data['body style'] = 'Minivan'
+        
+        # 11. EXTRACT DESCRIPTION - Multiple methods
+        # Method 1: Look for description div/section
+        for elem in soup.find_all(['div', 'section', 'p']):
+            classes = ' '.join(elem.get('class', [])).lower()
+            elem_id = elem.get('id', '').lower()
+            if any(kw in classes or kw in elem_id for kw in ['description', 'overview', 'details', 'comments']):
+                desc = self.clean_text(elem.get_text())
+                if len(desc) > 50 and len(desc) < 3000:
+                    vehicle_data['description'] = desc
+                    logger.info(f"  Description length: {len(desc)} chars")
+                    break
+        
+        # Method 2: Look for paragraphs with substantial text
+        if not vehicle_data['description']:
+            for elem in soup.find_all('p'):
+                text = self.clean_text(elem.get_text())
+                if len(text) > 100 and len(text) < 3000:
+                    # Check if it's not just a list of specs
+                    if ',' not in text[:50]:  # Descriptions usually start with sentences
+                        vehicle_data['description'] = text
+                        logger.info(f"  Description found (fallback): {len(text)} chars")
+                        break
+        
+        # 12. EXTRACT VEHICLE OPTIONS/FEATURES
+        options = []
+        # Look for feature lists
+        for ul in soup.find_all(['ul', 'ol']):
+            parent_text = ''
+            parent = ul.find_parent(['div', 'section'])
+            if parent:
+                parent_text = self.clean_text(parent.get_text()[:100]).lower()
+            
+            # Check if this list contains features
+            if any(kw in parent_text for kw in ['feature', 'option', 'equipment', 'include', 'standard']):
+                for li in ul.find_all('li'):
+                    option = self.clean_text(li.get_text())
+                    if option and len(option) < 150 and len(option) > 3:
+                        options.append(option)
+        
+        # Also check for dl/dt/dd pairs (definition lists)
+        for dl in soup.find_all('dl'):
+            dts = dl.find_all('dt')
+            dds = dl.find_all('dd')
+            for dt, dd in zip(dts, dds):
+                feature = f"{self.clean_text(dt.get_text())}: {self.clean_text(dd.get_text())}"
+                if len(feature) < 150:
+                    options.append(feature)
+        
+        if options:
+            vehicle_data['vehicle option'] = '; '.join(options[:100])
+            logger.info(f"  Options found: {len(options)} items")
+        
+        # 13. CHECK FOR CERTIFIED PRE-OWNED
+        cpo_keywords = ['certified pre-owned', 'cpo', 'certified used', 'certified']
+        if any(kw in page_text.lower() for kw in cpo_keywords):
+            # Make sure it's actually CPO, not just mentioning certification
+            for elem in soup.find_all(['div', 'span', 'badge', 'label', 'h2', 'h3']):
+                text = elem.get_text().lower()
+                if 'certified pre-owned' in text or 'cpo' in text:
+                    vehicle_data['certified pre-owned'] = 'yes'
+                    logger.info(f"  CPO: Yes")
+                    break
+        
+        # 14. EXTRACT IMAGE
         for img in soup.find_all('img'):
-            src = img.get('src') or img.get('data-src')
-            if src and 'vehicle' in src.lower() or 'inventory' in src.lower():
-                vehicle_data['image link'] = urljoin(self.base_url, src)
-                break
+            src = img.get('src') or img.get('data-src') or img.get('data-lazy')
+            alt = img.get('alt', '').lower()
+            if src:
+                # Skip logos, icons, buttons
+                if any(skip in src.lower() for skip in ['logo', 'icon', 'button', 'badge']):
+                    continue
+                # Prefer vehicle-specific images
+                if any(kw in src.lower() or kw in alt for kw in ['vehicle', 'inventory', 'stock', 'auto']):
+                    vehicle_data['image link'] = urljoin(self.base_url, src)
+                    break
+        
+        # Fallback: first large image
+        if not vehicle_data['image link']:
+            for img in soup.find_all('img'):
+                src = img.get('src')
+                if src and 'logo' not in src.lower():
+                    vehicle_data['image link'] = urljoin(self.base_url, src)
+                    break
+        
+        # 15. TRY JSON-LD STRUCTURED DATA
+        for script in soup.find_all('script', type='application/ld+json'):
+            try:
+                data = json.loads(script.string)
+                if isinstance(data, dict) and data.get('@type') in ['Car', 'Vehicle', 'Product']:
+                    if not vehicle_data['brand'] and data.get('brand'):
+                        vehicle_data['brand'] = data['brand'].get('name', data['brand']) if isinstance(data['brand'], dict) else data['brand']
+                    if not vehicle_data['model'] and data.get('model'):
+                        vehicle_data['model'] = data['model']
+                    if not vehicle_data['vin'] and data.get('vehicleIdentificationNumber'):
+                        vehicle_data['vin'] = data['vehicleIdentificationNumber']
+                    if not vehicle_data['color'] and data.get('color'):
+                        vehicle_data['color'] = data['color']
+                    if not vehicle_data['mileage'] and data.get('mileageFromOdometer'):
+                        vehicle_data['mileage'] = str(data['mileageFromOdometer'].get('value', ''))
+                    if not vehicle_data['description'] and data.get('description'):
+                        vehicle_data['description'] = data['description']
+            except:
+                continue
         
         return vehicle_data
     
