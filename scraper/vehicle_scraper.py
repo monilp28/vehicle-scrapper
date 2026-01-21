@@ -293,6 +293,7 @@ class UniversalVehicleScraper:
             '.inventory-title', '.vehicle-name', '.product-title'
         ]
         vehicle_data['title'] = self.find_element_with_multiple_selectors(soup, title_selectors)
+        logger.info(f"  Title: {vehicle_data['title']}")
         
         # Parse title
         parsed = self.parse_vehicle_title(vehicle_data['title'])
@@ -300,6 +301,8 @@ class UniversalVehicleScraper:
         vehicle_data['brand'] = parsed['make']
         vehicle_data['model'] = parsed['model']
         vehicle_data['trim / sub-model'] = parsed['trim']
+        
+        logger.info(f"  Parsed - Year: {vehicle_data['year']}, Make: {vehicle_data['brand']}, Model: {vehicle_data['model']}, Trim: {vehicle_data['trim / sub-model']}")
         
         # If model/trim not found in title, try to extract from page structure
         if not vehicle_data['model']:
@@ -309,6 +312,7 @@ class UniversalVehicleScraper:
                 prev_elem = elem.find_previous(['dt', 'th', 'label', 'span'])
                 if prev_elem and 'model' in prev_elem.get_text().lower():
                     vehicle_data['model'] = self.clean_text(elem_text)
+                    logger.info(f"  Model found in structure: {vehicle_data['model']}")
                     break
         
         if not vehicle_data['trim / sub-model']:
@@ -318,6 +322,7 @@ class UniversalVehicleScraper:
                 prev_elem = elem.find_previous(['dt', 'th', 'label', 'span'])
                 if prev_elem and 'trim' in prev_elem.get_text().lower():
                     vehicle_data['trim / sub-model'] = self.clean_text(elem_text)
+                    logger.info(f"  Trim found in structure: {vehicle_data['trim / sub-model']}")
                     break
         
         # Extract STOCK NUMBER with more patterns
