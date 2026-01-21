@@ -13,7 +13,12 @@ class UniversalVehicleScraper:
     def __init__(self):
         self.base_url = "https://www.reddeertoyota.com"
         self.headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1'
         }
         self.session = requests.Session()
         self.session.headers.update(self.headers)
@@ -52,14 +57,15 @@ class UniversalVehicleScraper:
         if not text:
             return ""
         cleaned = ' '.join(text.strip().split())
-        cleaned = re.sub(r'^(Stock|VIN|Price|MSRP|Mileage|Year|Make|Model|Trim|Color|Engine):\s*', '', cleaned, flags=re.IGNORECASE)
         return cleaned
     
     def extract_price(self, text):
         """Extract price from text"""
         if not text:
             return ""
-        price_match = re.search(r'\$?\s*([\d,]+)', text.replace(',', ''))
+        # Remove dollar signs and find numbers
+        text = text.replace('$', '').replace(',', '')
+        price_match = re.search(r'(\d+)', text)
         if price_match:
             return price_match.group(1)
         return ""
@@ -68,9 +74,11 @@ class UniversalVehicleScraper:
         """Extract mileage from text"""
         if not text:
             return ""
-        mileage_match = re.search(r'([\d,]+)\s*(?:km|miles?)', text, re.IGNORECASE)
+        # Look for numbers followed by km or miles
+        text = text.replace(',', '')
+        mileage_match = re.search(r'(\d+)\s*(?:km|miles?|KM|Km)', text, re.IGNORECASE)
         if mileage_match:
-            return mileage_match.group(1).replace(',', '')
+            return mileage_match.group(1)
         return ""
     
     def extract_year(self, text):
@@ -121,11 +129,11 @@ class UniversalVehicleScraper:
             trim_indicators = {
                 'LE', 'SE', 'XLE', 'XSE', 'Limited', 'Platinum', 'SR5', 'TRD',
                 'LX', 'EX', 'EX-L', 'Touring', 'Sport', 'Type R',
-                'S', 'SV', 'SL', 'SR', 'Nismo',
-                'LS', 'LT', 'LTZ', 'Premier', 'RS', 'SS',
+                'S', 'SV', 'SL', 'SR', 'Nismo', 'Pro-4X',
+                'LS', 'LT', 'LTZ', 'Premier', 'RS', 'SS', 'Denali',
                 'XL', 'XLT', 'Lariat', 'King Ranch', 'Raptor',
                 'SXT', 'GT', 'R/T', 'Hellcat',
-                'Hybrid', 'AWD', '4WD'
+                'Hybrid', 'AWD', '4WD', 'FWD', '4x4', '4x2'
             }
             
             trim_start_index = len(remaining_words)
@@ -188,8 +196,15 @@ class UniversalVehicleScraper:
             'vin': '', 'year': ''
         }
         
-        # Extract title
-        title_selectors = ['h1.vehicle-title', 'h1.vdp-title', 'h1.title', 'h1']
+        # Get all text content for searching
+        page_text = soup.get_text()
+        
+        # Extract title - expanded selectors
+        title_selectors = [
+            'h1', 'h1.vehicle-title', 'h1.vdp-title', 'h1.title', 
+            '.vehicle-info h1', '.vdp-header h1', '[data-vehicle-title]',
+            '.inventory-title', '.vehicle-name', '.product-title'
+        ]
         vehicle_data['title'] = self.find_element_with_multiple_selectors(soup, title_selectors)
         
         # Parse title
@@ -199,71 +214,213 @@ class UniversalVehicleScraper:
         vehicle_data['model'] = parsed['model']
         vehicle_data['trim / sub-model'] = parsed['trim']
         
-        # Extract other fields
-        stock_selectors = ['[data-stock]', 'span.stock-number', 'span:contains("Stock")']
-        stock_text = self.find_element_with_multiple_selectors(soup, stock_selectors)
-        if stock_text:
-            stock_match = re.search(r'(?:Stock|#)\s*[:#]?\s*([A-Z0-9-]+)', stock_text, re.IGNORECASE)
-            if stock_match:
-                vehicle_data['id / stock-#'] = stock_match.group(1)
+        # Extract STOCK NUMBER with more patterns
+        stock_patterns = [
+            r'(?:Stock|Stk|Stock #|Stock Number)[:\s#]*([A-Z0-9-]+)',
+            r'#\s*([A-Z0-9]{5,})',
+            r'Stock:\s*([A-Z0-9-]+)'
+        ]
         
-        vin_selectors = ['[data-vin]', 'span.vin', 'span:contains("VIN")']
-        vin_text = self.find_element_with_multiple_selectors(soup, vin_selectors)
-        if vin_text:
-            vin_match = re.search(r'(?:VIN[:\s]*)?([A-HJ-NPR-Z0-9]{17})', vin_text, re.IGNORECASE)
-            if vin_match:
-                vehicle_data['vin'] = vin_match.group(1).upper()
-        
-        price_selectors = ['[data-price]', 'span.price', '.vehicle-price']
-        vehicle_data['price'] = self.find_element_with_multiple_selectors(soup, price_selectors, self.extract_price)
-        
-        msrp_selectors = ['[data-msrp]', 'span.msrp', 'span:contains("MSRP")']
-        vehicle_data['vehicle MSRP'] = self.find_element_with_multiple_selectors(soup, msrp_selectors, self.extract_price)
-        
-        mileage_selectors = ['[data-mileage]', 'span.mileage', 'span:contains("km")']
-        vehicle_data['mileage'] = self.find_element_with_multiple_selectors(soup, mileage_selectors, self.extract_mileage)
-        
-        if '/inventory/new/' in url:
-            vehicle_data['condition'] = 'new'
-        elif '/inventory/used/' in url:
-            vehicle_data['condition'] = 'used'
-        
-        color_selectors = ['[data-exterior-color]', 'span.exterior-color', 'span:contains("Exterior")']
-        color_text = self.find_element_with_multiple_selectors(soup, color_selectors)
-        if color_text:
-            vehicle_data['color'] = re.sub(r'(Exterior|Color|:)', '', color_text, flags=re.IGNORECASE).strip()
-        
-        engine_selectors = ['[data-engine]', 'span.engine', 'span:contains("Engine")']
-        vehicle_data['engine'] = self.find_element_with_multiple_selectors(soup, engine_selectors)
-        
-        body_selectors = ['[data-body-style]', 'span.body-style', 'span:contains("Body")']
-        vehicle_data['body style'] = self.find_element_with_multiple_selectors(soup, body_selectors)
-        
-        img_selectors = ['img.vehicle-image', '.gallery img', '.vdp-image img']
-        for selector in img_selectors:
-            img_elem = soup.select_one(selector)
-            if img_elem:
-                img_src = img_elem.get('src') or img_elem.get('data-src')
-                if img_src:
-                    vehicle_data['image link'] = urljoin(self.base_url, img_src)
+        # Try dedicated stock elements
+        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td']):
+            elem_text = elem.get_text()
+            if 'stock' in elem_text.lower():
+                for pattern in stock_patterns:
+                    match = re.search(pattern, elem_text, re.IGNORECASE)
+                    if match:
+                        vehicle_data['id / stock-#'] = match.group(1).strip()
+                        break
+                if vehicle_data['id / stock-#']:
                     break
         
-        desc_selectors = ['.vehicle-description', '.description']
-        vehicle_data['description'] = self.find_element_with_multiple_selectors(soup, desc_selectors)
+        # Extract VIN with more patterns
+        vin_patterns = [
+            r'VIN[:\s]*([A-HJ-NPR-Z0-9]{17})',
+            r'(?:^|\s)([A-HJ-NPR-Z0-9]{17})(?:\s|$)'
+        ]
         
-        # Extract features
+        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td']):
+            elem_text = elem.get_text()
+            if 'vin' in elem_text.lower() or len(elem_text.strip()) == 17:
+                for pattern in vin_patterns:
+                    match = re.search(pattern, elem_text, re.IGNORECASE)
+                    if match:
+                        vehicle_data['vin'] = match.group(1).upper()
+                        break
+                if vehicle_data['vin']:
+                    break
+        
+        # Extract PRICE - multiple approaches
+        price_found = False
+        
+        # Method 1: Look for price in common elements
+        for elem in soup.find_all(['span', 'div', 'p', 'strong', 'h2', 'h3']):
+            elem_text = elem.get_text()
+            if '$' in elem_text and not price_found:
+                # Look for selling price indicators
+                if any(keyword in elem_text.lower() for keyword in ['price', 'sale', 'cost', 'our price']):
+                    price = self.extract_price(elem_text)
+                    if price and int(price) > 1000:  # Reasonable vehicle price
+                        vehicle_data['price'] = price
+                        price_found = True
+                        break
+        
+        # Method 2: Try specific selectors
+        if not price_found:
+            price_selectors = [
+                '.price', '.selling-price', '.our-price', '.vehicle-price',
+                '[data-price]', '#price', '.sale-price', '.internet-price',
+                '.final-price', '.discounted-price'
+            ]
+            for selector in price_selectors:
+                elem = soup.select_one(selector)
+                if elem:
+                    price = self.extract_price(elem.get_text())
+                    if price and int(price) > 1000:
+                        vehicle_data['price'] = price
+                        price_found = True
+                        break
+        
+        # Extract MSRP
+        for elem in soup.find_all(['span', 'div', 'p', 'strong']):
+            elem_text = elem.get_text()
+            if 'msrp' in elem_text.lower() or 'retail' in elem_text.lower():
+                msrp = self.extract_price(elem_text)
+                if msrp and int(msrp) > 1000:
+                    vehicle_data['vehicle MSRP'] = msrp
+                    break
+        
+        # Extract MILEAGE - enhanced
+        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td']):
+            elem_text = elem.get_text()
+            if 'km' in elem_text.lower() or 'mileage' in elem_text.lower() or 'odometer' in elem_text.lower():
+                mileage = self.extract_mileage(elem_text)
+                if mileage:
+                    vehicle_data['mileage'] = mileage
+                    break
+        
+        # Determine CONDITION from URL or page content
+        if '/inventory/new/' in url or '/new/' in url:
+            vehicle_data['condition'] = 'new'
+        elif '/inventory/used/' in url or '/used/' in url:
+            vehicle_data['condition'] = 'used'
+        else:
+            # Check page content
+            if 'new vehicle' in page_text.lower() or 'brand new' in page_text.lower():
+                vehicle_data['condition'] = 'new'
+            elif 'used vehicle' in page_text.lower() or 'pre-owned' in page_text.lower():
+                vehicle_data['condition'] = 'used'
+        
+        # Extract COLOR - enhanced
+        color_keywords = ['exterior', 'color', 'colour', 'paint']
+        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td', 'dt', 'dd']):
+            elem_text = elem.get_text()
+            if any(keyword in elem_text.lower() for keyword in color_keywords):
+                # Extract color value
+                color_text = self.clean_text(elem_text)
+                # Remove label text
+                color_text = re.sub(r'(?i)(exterior|color|colour|paint)[:\s]*', '', color_text)
+                if color_text and len(color_text) < 50:  # Reasonable color name length
+                    vehicle_data['color'] = color_text
+                    break
+        
+        # Extract ENGINE
+        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td', 'dt', 'dd']):
+            elem_text = elem.get_text()
+            if 'engine' in elem_text.lower() and len(elem_text) < 200:
+                engine_text = self.clean_text(elem_text)
+                engine_text = re.sub(r'(?i)engine[:\s]*', '', engine_text)
+                if engine_text and len(engine_text) > 3:
+                    vehicle_data['engine'] = engine_text
+                    break
+        
+        # Extract BODY STYLE
+        body_keywords = ['body', 'body style', 'type', 'vehicle type']
+        for elem in soup.find_all(['span', 'div', 'p', 'li', 'td', 'dt', 'dd']):
+            elem_text = elem.get_text()
+            if any(keyword in elem_text.lower() for keyword in body_keywords):
+                body_text = self.clean_text(elem_text)
+                body_text = re.sub(r'(?i)(body|body style|type|vehicle type)[:\s]*', '', body_text)
+                # Check if it's a valid body style
+                valid_body_styles = ['sedan', 'suv', 'truck', 'coupe', 'hatchback', 'wagon', 
+                                     'van', 'minivan', 'convertible', 'crossover', 'pickup']
+                if any(style in body_text.lower() for style in valid_body_styles):
+                    vehicle_data['body style'] = body_text
+                    break
+        
+        # Extract IMAGE - expanded search
+        img_found = False
+        for img in soup.find_all('img'):
+            src = img.get('src') or img.get('data-src') or img.get('data-lazy')
+            if src and not img_found:
+                # Skip small images, icons, logos
+                if any(skip in src.lower() for skip in ['icon', 'logo', 'thumbnail', 'btn', 'button']):
+                    continue
+                # Look for vehicle images
+                if any(indicator in src.lower() for indicator in ['vehicle', 'inventory', 'stock', 'auto', 'car']):
+                    vehicle_data['image link'] = urljoin(self.base_url, src)
+                    img_found = True
+                    break
+        
+        # If no specific vehicle image found, take first large image
+        if not img_found:
+            for img in soup.find_all('img'):
+                src = img.get('src') or img.get('data-src')
+                if src and 'logo' not in src.lower() and 'icon' not in src.lower():
+                    vehicle_data['image link'] = urljoin(self.base_url, src)
+                    break
+        
+        # Extract DESCRIPTION
+        desc_keywords = ['description', 'overview', 'details', 'about', 'comments']
+        for elem in soup.find_all(['div', 'p', 'section']):
+            if any(keyword in elem.get('class', []) + [elem.get('id', '')] for keyword in desc_keywords):
+                desc_text = self.clean_text(elem.get_text())
+                if len(desc_text) > 50 and len(desc_text) < 2000:  # Reasonable description length
+                    vehicle_data['description'] = desc_text
+                    break
+        
+        # Extract FEATURES/OPTIONS - look for lists
         options = []
-        for selector in ['.features li', '.options li', '.vehicle-features li']:
-            feature_elems = soup.select(selector)
-            if feature_elems:
-                options = [self.clean_text(f.get_text()) for f in feature_elems]
-                break
-        if options:
-            vehicle_data['vehicle option'] = '; '.join(options[:50])
+        for ul in soup.find_all(['ul', 'ol']):
+            list_text = ul.get_text().lower()
+            if any(keyword in list_text for keyword in ['feature', 'option', 'equipment', 'include']):
+                for li in ul.find_all('li'):
+                    option_text = self.clean_text(li.get_text())
+                    if option_text and len(option_text) < 100:
+                        options.append(option_text)
         
-        page_text = soup.get_text().lower()
-        if 'certified pre-owned' in page_text or 'cpo' in page_text:
+        if options:
+            vehicle_data['vehicle option'] = '; '.join(options[:100])  # Limit to first 100 options
+        
+        # Check for CERTIFIED PRE-OWNED
+        cpo_keywords = ['certified', 'cpo', 'certified pre-owned', 'certified used']
+        if any(keyword in page_text.lower() for keyword in cpo_keywords):
             vehicle_data['certified pre-owned'] = 'yes'
+        
+        # Try to extract from JSON-LD structured data
+        for script in soup.find_all('script', type='application/ld+json'):
+            try:
+                data = json.loads(script.string)
+                if isinstance(data, dict) and data.get('@type') in ['Car', 'Vehicle', 'Product']:
+                    # Fill in missing data from structured data
+                    if not vehicle_data['brand'] and data.get('brand'):
+                        vehicle_data['brand'] = data['brand'].get('name', data['brand']) if isinstance(data['brand'], dict) else data['brand']
+                    if not vehicle_data['model'] and data.get('model'):
+                        vehicle_data['model'] = data['model']
+                    if not vehicle_data['year'] and data.get('modelDate'):
+                        vehicle_data['year'] = self.extract_year(str(data['modelDate']))
+                    if not vehicle_data['vin'] and data.get('vehicleIdentificationNumber'):
+                        vehicle_data['vin'] = data['vehicleIdentificationNumber']
+                    if not vehicle_data['color'] and data.get('color'):
+                        vehicle_data['color'] = data['color']
+                    if not vehicle_data['mileage'] and data.get('mileageFromOdometer'):
+                        vehicle_data['mileage'] = str(data['mileageFromOdometer'].get('value', ''))
+                    if not vehicle_data['price'] and data.get('offers'):
+                        offers = data['offers']
+                        if isinstance(offers, dict):
+                            vehicle_data['price'] = str(offers.get('price', ''))
+            except:
+                continue
         
         return vehicle_data
     
