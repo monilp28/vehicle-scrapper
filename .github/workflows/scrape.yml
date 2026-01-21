@@ -1,3 +1,4 @@
+
 name: Scrape Vehicle Inventory
 
 on:
@@ -31,13 +32,6 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-    
-    - name: Verify Google Sheets setup
-      env:
-        GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
-        GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
-      run: |
-        python verify_sheets.py
     
     - name: Run scraper
       env:
