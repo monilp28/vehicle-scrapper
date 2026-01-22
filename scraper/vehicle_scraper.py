@@ -28,11 +28,31 @@ class VehicleScraper:
     
     def extract_links(self, soup):
         links = set()
+        all_hrefs = []
+        
+        # Collect all links
         for a in soup.find_all('a', href=True):
             href = a['href']
-            if '/inventory/' in href and href.count('/') > 4:
-                if not any(x in href for x in ['?page=', '/new/', '/used/']):
-                    links.add(urljoin(self.base_url, href))
+            all_hrefs.append(href)
+            
+            # Look for vehicle inventory links - be very permissive
+            if '/inventory/' in href:
+                full_url = urljoin(self.base_url, href)
+                
+                # Exclude category pages and pagination
+                if not any(full_url.endswith(x) for x in ['/new/', '/used/', '/new', '/used']):
+                    if '?page=' not in full_url and '?sort=' not in full_url:
+                        # This should be a vehicle page
+                        links.add(full_url)
+        
+        # Debug: show what we found
+        logger.info(f"  Total <a> tags found: {len(all_hrefs)}")
+        logger.info(f"  Links with /inventory/: {len([h for h in all_hrefs if '/inventory/' in h])}")
+        if len(links) == 0:
+            logger.info(f"  Sample hrefs:")
+            for href in all_hrefs[:10]:
+                logger.info(f"    - {href}")
+        
         return list(links)
     
     def clean(self, text):
