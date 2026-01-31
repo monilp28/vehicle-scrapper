@@ -228,55 +228,92 @@ class VehicleScraper:
         h1 = soup.find('h1')
         if h1:
             data['title'] = self.extract_text_safe(h1)
+            # Remove "New" or "Used" from title
+            data['title'] = re.sub(r'\b(New|Used)\b', '', data['title'], flags=re.I).strip()
+            # Clean up extra spaces
+            data['title'] = ' '.join(data['title'].split())
         
         # Extract year
         year_match = re.search(r'\b(20\d{2})\b', data['title'] or page_text)
         if year_match:
             data['year'] = year_match.group(1)
         
-        # Determine condition from URL
-        if '/new/' in url:
+        # Determine condition from URL - ensure it's set
+        if '/new/' in url.lower():
             data['condition'] = 'new'
-        elif '/used/' in url:
+        elif '/used/' in url.lower():
             data['condition'] = 'used'
         
-        # Extract brand from title
-        brands = ['Toyota', 'Honda', 'Ford', 'Chevrolet', 'GMC', 'Dodge', 'Ram',
+        # Enhanced brand extraction from title AND page text
+        brands = ['Toyota', 'Honda', 'Ford', 'Chevrolet', 'Chevy', 'GMC', 'Dodge', 'Ram',
                  'Nissan', 'Hyundai', 'Kia', 'Mazda', 'Subaru', 'Jeep', 'Acura',
-                 'Cadillac', 'Buick', 'Lexus']
+                 'Cadillac', 'Buick', 'Lexus', 'Lincoln', 'Volkswagen', 'VW', 'Audi',
+                 'BMW', 'Mercedes', 'Mercedes-Benz', 'Volvo', 'Mitsubishi', 'Infiniti']
+        
+        # Try title first
         title_lower = (data['title'] or '').lower()
         for brand in brands:
             if brand.lower() in title_lower:
-                data['brand'] = brand
+                data['brand'] = 'Chevrolet' if brand == 'Chevy' else brand
                 break
         
-        # Parse model and trim from title
+        # If brand not found in title, search page text
+        if not data['brand']:
+            for brand in brands:
+                if re.search(r'\bMake\s*:?\s*' + re.escape(brand), page_text, re.I):
+                    data['brand'] = 'Chevrolet' if brand == 'Chevy' else brand
+                    break
+        
+        # If still not found, look for brand in meta tags or structured data
+        if not data['brand']:
+            for meta in soup.find_all('meta'):
+                content = meta.get('content', '').lower()
+                for brand in brands:
+                    if brand.lower() in content:
+                        data['brand'] = 'Chevrolet' if brand == 'Chevy' else brand
+                        break
+                if data['brand']:
+                    break
+        
+        # Parse model and trim from title - improved separation
         if data['title']:
             remaining = data['title']
-            # Remove year and brand
+            # Remove year
             if data['year']:
                 remaining = remaining.replace(data['year'], '').strip()
+            # Remove brand
             if data['brand']:
                 remaining = re.sub(r'\b' + re.escape(data['brand']) + r'\b', '', 
                                  remaining, flags=re.I).strip()
             
+            # Clean up remaining text
+            remaining = ' '.join(remaining.split())
             parts = remaining.split()
+            
             if parts:
+                # First part is the model
                 data['model'] = parts[0]
+                
+                # Everything else is trim/sub-model
                 if len(parts) > 1:
                     data['trim / sub-model'] = ' '.join(parts[1:])
         
-        # Extract VIN
-        vin_match = re.search(r'\b([A-HJ-NPR-Z0-9]{17})\b', page_text)
+        # Enhanced VIN extraction with validation
+        vin_pattern = r'\b([A-HJ-NPR-Z0-9]{17})\b'
+        vin_match = re.search(vin_pattern, page_text)
         if vin_match:
-            vin = vin_match.group(1).upper()
-            if len(vin) == 17:
-                data['vin'] = vin
+            potential_vin = vin_match.group(1).upper()
+            # Validate VIN (no I, O, Q allowed, must be exactly 17 chars)
+            if (len(potential_vin) == 17 and 
+                potential_vin.isalnum() and 
+                not any(char in potential_vin for char in ['I', 'O', 'Q'])):
+                data['vin'] = potential_vin
         
         # Extract stock number
         stock_patterns = [
             r'Stock\s*#?\s*:?\s*([A-Z0-9-]+)',
             r'Stk\s*#?\s*:?\s*([A-Z0-9-]+)',
+            r'Stock\s*Number\s*:?\s*([A-Z0-9-]+)',
         ]
         for pattern in stock_patterns:
             match = re.search(pattern, page_text, re.I)
@@ -286,25 +323,32 @@ class VehicleScraper:
                     data['id / stock-#'] = stock
                     break
         
-        # Extract mileage
+        # Enhanced mileage extraction with better validation
         mileage_patterns = [
-            r'([\d,]+)\s*km',
-            r'Mileage\s*:?\s*([\d,]+)',
+            r'(\d{1,3}(?:,\d{3})*)\s*km',
+            r'Mileage\s*:?\s*(\d{1,3}(?:,\d{3})*)',
+            r'Odometer\s*:?\s*(\d{1,3}(?:,\d{3})*)',
         ]
         for pattern in mileage_patterns:
             match = re.search(pattern, page_text, re.I)
             if match:
                 try:
-                    mileage = int(match.group(1).replace(',', ''))
+                    mileage_str = match.group(1).replace(',', '')
+                    mileage = int(mileage_str)
+                    # Validate reasonable mileage range
                     if 0 <= mileage <= 500000:
                         data['mileage'] = str(mileage)
                         break
-                except:
-                    pass
+                except ValueError:
+                    continue
+        
+        # If new vehicle and no mileage found, set to 0
+        if data['condition'] == 'new' and not data['mileage']:
+            data['mileage'] = '0'
         
         # Extract engine
         engine_patterns = [
-            r'(\d\.\d+L?\s*(?:V\d+|I\d+|Hybrid|Turbo))',
+            r'(\d\.\d+L?\s*(?:V\d+|I\d+|Hybrid|Turbo|EcoBoost))',
             r'Engine\s*:?\s*([^\n]{5,40})',
         ]
         for pattern in engine_patterns:
@@ -315,13 +359,37 @@ class VehicleScraper:
                     data['engine'] = engine
                     break
         
-        # Extract color
-        color_match = re.search(r'(?:Exterior\s*)?Colou?r\s*:?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', 
-                               page_text)
-        if color_match:
-            color = color_match.group(1).strip()
-            if 3 <= len(color) <= 30:
-                data['color'] = color
+        # Enhanced color extraction with multiple strategies
+        # Strategy 1: Look for "Exterior Color:" pattern
+        color_patterns = [
+            r'Exterior\s*Colou?r\s*:?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
+            r'Colou?r\s*:?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
+            r'Paint\s*:?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
+        ]
+        
+        for pattern in color_patterns:
+            match = re.search(pattern, page_text)
+            if match:
+                color = match.group(1).strip()
+                # Validate color length
+                if 3 <= len(color) <= 30:
+                    data['color'] = color
+                    break
+        
+        # Strategy 2: Look in HTML elements with color-related classes or IDs
+        if not data['color']:
+            color_elements = soup.find_all(class_=re.compile(r'color|colour|exterior', re.I))
+            for elem in color_elements:
+                text = self.extract_text_safe(elem)
+                # Extract color-like text (capitalize first letter pattern)
+                color_match = re.search(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b', text)
+                if color_match:
+                    potential_color = color_match.group(1)
+                    # Validate it's actually a color (not other capitalized words)
+                    if (3 <= len(potential_color) <= 30 and 
+                        potential_color.lower() not in ['new', 'used', 'toyota', 'stock', 'price']):
+                        data['color'] = potential_color
+                        break
         
         # Extract body style
         body_styles = ['Sedan', 'SUV', 'Truck', 'Coupe', 'Hatchback', 'Wagon',
@@ -331,16 +399,24 @@ class VehicleScraper:
                 data['body style'] = style
                 break
         
-        # Extract prices
-        data['price'] = self.extract_price(soup)
-        data['vehicle MSRP'] = self.extract_msrp(soup)
+        # Extract prices (raw numbers, will add $ later)
+        price_raw = self.extract_price(soup)
+        msrp_raw = self.extract_msrp(soup)
+        
+        # Add $ prefix to prices
+        if price_raw:
+            data['price'] = f"${price_raw}"
+        if msrp_raw:
+            data['vehicle MSRP'] = f"${msrp_raw}"
         
         # Validate price relationship
-        if data['price'] and data['vehicle MSRP']:
+        if price_raw and msrp_raw:
             try:
-                if int(data['vehicle MSRP']) < int(data['price']):
-                    data['price'], data['vehicle MSRP'] = data['vehicle MSRP'], data['price']
-            except:
+                if int(msrp_raw) < int(price_raw):
+                    # Swap them
+                    data['price'] = f"${msrp_raw}"
+                    data['vehicle MSRP'] = f"${price_raw}"
+            except ValueError:
                 pass
         
         # All-in price typically same as price
@@ -364,8 +440,8 @@ class VehicleScraper:
         # Log summary
         logger.info(f"  ✓ {data['year']} {data['brand']} {data['model']} {data['trim / sub-model']}")
         logger.info(f"  Stock: {data['id / stock-#']} | VIN: {data['vin']}")
-        logger.info(f"  Price: ${data['price']} | MSRP: ${data['vehicle MSRP']}")
-        logger.info(f"  Condition: {data['condition']} | Mileage: {data['mileage']}")
+        logger.info(f"  Price: {data['price']} | MSRP: {data['vehicle MSRP']}")
+        logger.info(f"  Condition: {data['condition']} | Mileage: {data['mileage']} | Color: {data['color']}")
         
         return data
     
