@@ -244,6 +244,22 @@ class VehicleScraper:
         elif '/used/' in url.lower():
             data['condition'] = 'used'
         
+        # Fallback strategies for condition if URL doesn't contain it
+        if not data['condition']:
+            # Look for condition in text
+            condition_match = re.search(r'Condition\s*:?\s*(New|Used)', page_text, re.I)
+            if condition_match:
+                data['condition'] = condition_match.group(1).lower()
+            # Check data attributes
+            elif soup.find(attrs={'data-condition': True}):
+                cond_elem = soup.find(attrs={'data-condition': True})
+                data['condition'] = cond_elem.get('data-condition', '').lower()
+            # Check for "New Vehicle" or "Used Vehicle"
+            elif re.search(r'\bNew\s+Vehicle\b', page_text, re.I):
+                data['condition'] = 'new'
+            elif re.search(r'\bUsed\s+Vehicle\b', page_text, re.I):
+                data['condition'] = 'used'
+        
         # Enhanced brand extraction from title AND page text
         brands = ['Toyota', 'Honda', 'Ford', 'Chevrolet', 'Chevy', 'GMC', 'Dodge', 'Ram',
                  'Nissan', 'Hyundai', 'Kia', 'Mazda', 'Subaru', 'Jeep', 'Acura',
@@ -424,6 +440,90 @@ class VehicleScraper:
         
         # Extract image
         data['image link'] = self.extract_image(soup)
+        
+        # Extract vehicle options/features
+        options = []
+        
+        # Strategy 1: Look for feature/option lists (ul, ol)
+        for ul in soup.find_all(['ul', 'ol']):
+            parent_class = ' '.join(ul.get('class', [])).lower()
+            parent_id = (ul.get('id') or '').lower()
+            
+            # Check if list contains features/options
+            if any(kw in parent_class or kw in parent_id 
+                   for kw in ['feature', 'option', 'equipment', 'spec', 'highlight', 'amenity']):
+                items = ul.find_all('li')
+                for item in items:
+                    opt_text = self.extract_text_safe(item)
+                    if opt_text and 3 < len(opt_text) < 100:
+                        options.append(opt_text)
+        
+        # Strategy 2: Look for feature divs/sections
+        for elem in soup.find_all(['div', 'section', 'span', 'p'], 
+                                   class_=re.compile(r'feature|option|equipment|package', re.I)):
+            text = self.extract_text_safe(elem)
+            if text and 5 < len(text) < 100:
+                if text not in options:  # Avoid duplicates
+                    options.append(text)
+        
+        # Strategy 3: Search for "Features:" or "Options:" in text
+        feature_patterns = [
+            r'(?:Standard\s+)?Features?\s*:?\s*([^\n]{20,500})',
+            r'(?:Standard\s+)?Equipment\s*:?\s*([^\n]{20,500})',
+            r'Options?\s*Included?\s*:?\s*([^\n]{20,500})',
+            r'Packages?\s*:?\s*([^\n]{20,500})',
+        ]
+        
+        for pattern in feature_patterns:
+            match = re.search(pattern, page_text, re.I)
+            if match:
+                features_text = match.group(1)
+                # Split by common delimiters
+                items = re.split(r'[,;•·]', features_text)
+                for item in items:
+                    clean = item.strip()
+                    if clean and 3 < len(clean) < 100:
+                        options.append(clean)
+        
+        # Strategy 4: Look for definition lists (dt/dd)
+        for dl in soup.find_all('dl'):
+            dts = dl.find_all('dt')
+            dds = dl.find_all('dd')
+            for dt, dd in zip(dts, dds):
+                dt_text = self.extract_text_safe(dt)
+                dd_text = self.extract_text_safe(dd)
+                if dt_text and dd_text and 3 < len(dt_text) < 50:
+                    # Combine as "Feature: Value"
+                    option = f"{dt_text}: {dd_text[:50]}"
+                    options.append(option)
+        
+        # Clean and deduplicate options
+        unique_options = []
+        seen = set()
+        for opt in options:
+            opt_clean = opt.strip()
+            opt_lower = opt_clean.lower()
+            
+            if not opt_lower or opt_lower in seen:
+                continue
+            
+            # Filter out unwanted text
+            skip_keywords = ['click', 'more info', 'view', 'details', 'features', 'options',
+                            'read more', 'see all', 'show more', 'contact', 'call', 'email']
+            if any(skip in opt_lower for skip in skip_keywords):
+                continue
+            
+            # Filter out very generic options
+            if opt_lower in ['yes', 'no', 'n/a', 'tbd', 'standard', 'available']:
+                continue
+            
+            if 3 < len(opt_clean) < 100:
+                unique_options.append(opt_clean)
+                seen.add(opt_lower)
+        
+        # Store up to 30 options (separated by commas)
+        if unique_options:
+            data['vehicle option'] = ', '.join(unique_options[:30])
         
         # Extract description
         desc_elem = (soup.find('meta', {'name': 'description'}) or 
