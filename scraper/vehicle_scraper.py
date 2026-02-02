@@ -81,7 +81,7 @@ class VehicleScraper:
                     if 'offers' in data and isinstance(data['offers'], dict):
                         if 'price' in data['offers']:
                             return str(int(float(data['offers']['price'])))
-            except:
+            except Exception:
                 pass
         
         # Strategy 2: Meta tags
@@ -91,7 +91,7 @@ class VehicleScraper:
                 if content:
                     try:
                         return str(int(float(content)))
-                    except:
+                    except Exception:
                         pass
         
         # Strategy 3: Search for price elements (excluding MSRP)
@@ -104,7 +104,7 @@ class VehicleScraper:
                         num = int(match.group(1).replace(',', ''))
                         if 5000 <= num <= 300000:
                             return str(num)
-                    except:
+                    except Exception:
                         pass
         
         # Strategy 4: Page text search
@@ -119,7 +119,7 @@ class VehicleScraper:
                     context = page_text[start:end].lower()
                     if not any(kw in context for kw in ['msrp', 'was', 'original']):
                         return str(num)
-            except:
+            except Exception:
                 pass
         
         return ''
@@ -136,7 +136,7 @@ class VehicleScraper:
                         num = int(match.group(1).replace(',', ''))
                         if 5000 <= num <= 300000:
                             return str(num)
-                    except:
+                    except Exception:
                         pass
         
         # Look for strikethrough prices
@@ -148,7 +148,7 @@ class VehicleScraper:
                     num = int(match.group(1).replace(',', ''))
                     if 5000 <= num <= 300000:
                         return str(num)
-                except:
+                except Exception:
                     pass
         
         return ''
@@ -169,8 +169,8 @@ class VehicleScraper:
                         # Verify it's not a logo
                         if not any(x in img.lower() for x in ['logo', 'icon', 'favicon']):
                             return urljoin(self.base_url, img)
-                except:
-                    pass
+            except Exception:
+                pass
         
         # Strategy 2: Open Graph meta tags
         og_image = soup.find('meta', property='og:image')
@@ -199,7 +199,7 @@ class VehicleScraper:
                         try:
                             if int(width) < 200 or int(height) < 150:
                                 continue
-                        except:
+                        except Exception:
                             pass
                     
                     return urljoin(self.base_url, src)
@@ -260,7 +260,7 @@ class VehicleScraper:
                 try:
                     if int(width) < 300 or int(height) < 200:
                         continue
-                except:
+                except Exception:
                     pass
             
             # Check if image is in a header/nav/footer (skip those)
@@ -533,7 +533,7 @@ class VehicleScraper:
                                     data['mileage'] = str(mileage_val)
                                     mileage_found = True
                                     break
-                            except:
+                            except Exception:
                                 pass
             if mileage_found:
                 break
@@ -555,7 +555,7 @@ class VehicleScraper:
                                     data['mileage'] = str(mileage_val)
                                     mileage_found = True
                                     break
-                            except:
+                            except Exception:
                                 pass
                 if mileage_found:
                     break
@@ -572,7 +572,7 @@ class VehicleScraper:
                                 data['mileage'] = str(mileage_val)
                                 mileage_found = True
                                 break
-                        except:
+                        except Exception:
                             pass
                 if mileage_found:
                     break
@@ -606,7 +606,7 @@ class VehicleScraper:
                             data['mileage'] = str(mileage_val)
                             mileage_found = True
                             break
-                    except:
+                    except Exception:
                         pass
                 if mileage_found:
                     break
@@ -626,7 +626,7 @@ class VehicleScraper:
                             data['mileage'] = str(mileage_val)
                             mileage_found = True
                             break
-                    except:
+                    except Exception:
                         pass
         
         # If new vehicle and no mileage found, set to 0
@@ -756,7 +756,7 @@ class VehicleScraper:
                             if key in json_data and json_data[key]:
                                 data['color'] = str(json_data[key])
                                 break
-                except:
+                except Exception:
                     pass
                 if data['color']:
                     break
