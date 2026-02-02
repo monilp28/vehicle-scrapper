@@ -154,8 +154,10 @@ class VehicleScraper:
         return ''
     
     def extract_image(self, soup):
-        """Extract primary vehicle image URL"""
-        # Try JSON-LD
+        """Extract primary vehicle image URL (avoiding logos)"""
+        image_url = ''
+        
+        # Strategy 1: JSON-LD structured data
         for script in soup.find_all('script', type='application/ld+json'):
             try:
                 data = json.loads(script.string)
@@ -164,29 +166,119 @@ class VehicleScraper:
                     if isinstance(img, list):
                         img = img[0] if img else ''
                     if img:
-                        return urljoin(self.base_url, img)
-            except:
-                pass
+                        # Verify it's not a logo
+                        if not any(x in img.lower() for x in ['logo', 'icon', 'favicon']):
+                            return urljoin(self.base_url, img)
+                except:
+                    pass
         
-        # Try Open Graph
-        og_img = soup.find('meta', property='og:image')
-        if og_img and og_img.get('content'):
-            return urljoin(self.base_url, og_img['content'])
+        # Strategy 2: Open Graph meta tags
+        og_image = soup.find('meta', property='og:image')
+        if og_image and og_image.get('content'):
+            img_url = og_image['content']
+            if not any(x in img_url.lower() for x in ['logo', 'icon', 'favicon']):
+                return urljoin(self.base_url, img_url)
         
-        # Find vehicle images
-        for img in soup.find_all('img'):
-            src = img.get('src', '') or img.get('data-src', '')
-            alt = img.get('alt', '').lower()
-            if src and 'vehicle' in alt:
-                return urljoin(self.base_url, src)
+        # Strategy 3: Look for vehicle gallery/slider images
+        gallery_containers = soup.find_all(['div', 'section', 'ul'], 
+                                          class_=re.compile(r'gallery|slider|carousel|photos?|images?', re.I))
         
-        # Fallback to first meaningful image
-        for img in soup.find_all('img'):
-            src = img.get('src', '') or img.get('data-src', '')
-            if src and not any(x in src.lower() for x in ['logo', 'icon']):
-                return urljoin(self.base_url, src)
+        for container in gallery_containers:
+            imgs = container.find_all('img')
+            for img in imgs:
+                src = img.get('src', '') or img.get('data-src', '') or img.get('data-lazy', '')
+                if src:
+                    # Exclude logos, icons, small images
+                    if any(x in src.lower() for x in ['logo', 'icon', 'favicon', 'banner', 'ad']):
+                        continue
+                    
+                    # Check image size if available
+                    width = img.get('width', '')
+                    height = img.get('height', '')
+                    if width and height:
+                        try:
+                            if int(width) < 200 or int(height) < 150:
+                                continue
+                        except:
+                            pass
+                    
+                    return urljoin(self.base_url, src)
         
-        return ''
+        # Strategy 4: Look for main vehicle image (common class patterns)
+        main_image_selectors = [
+            'img[class*="vehicle"]',
+            'img[class*="main"]',
+            'img[class*="primary"]',
+            'img[class*="hero"]',
+            'img[class*="feature"]',
+            'img[id*="vehicle"]',
+            'img[id*="main"]',
+        ]
+        
+        for selector in main_image_selectors:
+            imgs = soup.select(selector)
+            for img in imgs:
+                src = img.get('src', '') or img.get('data-src', '') or img.get('data-lazy', '')
+                alt = img.get('alt', '').lower()
+                
+                if src:
+                    # Exclude logos and small images
+                    if any(x in src.lower() for x in ['logo', 'icon', 'favicon', 'thumb']):
+                        continue
+                    
+                    # Prefer images with vehicle-related alt text
+                    if any(kw in alt for kw in ['vehicle', 'car', 'truck', 'suv', 'van', 'auto']):
+                        return urljoin(self.base_url, src)
+                    
+                    # Store as fallback
+                    if not image_url:
+                        image_url = urljoin(self.base_url, src)
+        
+        # Return fallback if found
+        if image_url:
+            return image_url
+        
+        # Strategy 5: First large, meaningful image on page
+        all_imgs = soup.find_all('img')
+        for img in all_imgs:
+            src = img.get('src', '') or img.get('data-src', '') or img.get('data-lazy', '')
+            if not src:
+                continue
+            
+            src_lower = src.lower()
+            
+            # Skip logos, icons, ads, tracking pixels
+            exclude_keywords = ['logo', 'icon', 'favicon', 'banner', 'ad', 'pixel', 
+                               'track', 'badge', 'award', '1x1', 'spacer', 'blank']
+            if any(kw in src_lower for kw in exclude_keywords):
+                continue
+            
+            # Skip very small images (likely not vehicle photos)
+            width = img.get('width', '')
+            height = img.get('height', '')
+            if width and height:
+                try:
+                    if int(width) < 300 or int(height) < 200:
+                        continue
+                except:
+                    pass
+            
+            # Check if image is in a header/nav/footer (skip those)
+            parent_classes = []
+            parent = img.parent
+            for _ in range(3):  # Check up to 3 levels up
+                if parent:
+                    parent_classes.extend(parent.get('class', []))
+                    parent = parent.parent
+            
+            parent_class_str = ' '.join(parent_classes).lower()
+            if any(x in parent_class_str for x in ['header', 'nav', 'footer', 'menu']):
+                continue
+            
+            # This is likely a vehicle image
+            return urljoin(self.base_url, src)
+        
+        return image_url
     
     def scrape_vehicle(self, url):
         """Scrape a single vehicle detail page"""
@@ -291,7 +383,9 @@ class VehicleScraper:
                 if data['brand']:
                     break
         
-        # Parse model and trim from title - improved separation
+        # Enhanced model and trim extraction with multiple strategies
+        
+        # Strategy 1: Parse from title
         if data['title']:
             remaining = data['title']
             # Remove year
@@ -313,6 +407,85 @@ class VehicleScraper:
                 # Everything else is trim/sub-model
                 if len(parts) > 1:
                     data['trim / sub-model'] = ' '.join(parts[1:])
+        
+        # Strategy 2: Look for model and trim in structured data
+        if not data['model'] or not data['trim / sub-model']:
+            # Check tables
+            for table in soup.find_all('table'):
+                for row in table.find_all('tr'):
+                    cells = row.find_all(['td', 'th'])
+                    if len(cells) >= 2:
+                        label = self.extract_text_safe(cells[0]).lower()
+                        value = self.extract_text_safe(cells[1])
+                        
+                        if not data['model'] and 'model' in label:
+                            # Model might include trim, split it
+                            model_parts = value.split()
+                            if model_parts:
+                                data['model'] = model_parts[0]
+                                if len(model_parts) > 1 and not data['trim / sub-model']:
+                                    data['trim / sub-model'] = ' '.join(model_parts[1:])
+                        
+                        if not data['trim / sub-model'] and ('trim' in label or 'sub-model' in label or 'submodel' in label):
+                            data['trim / sub-model'] = value
+            
+            # Check definition lists
+            if not data['model'] or not data['trim / sub-model']:
+                for dl in soup.find_all('dl'):
+                    dts = dl.find_all('dt')
+                    dds = dl.find_all('dd')
+                    for dt, dd in zip(dts, dds):
+                        dt_text = self.extract_text_safe(dt).lower()
+                        dd_text = self.extract_text_safe(dd)
+                        
+                        if not data['model'] and 'model' in dt_text:
+                            model_parts = dd_text.split()
+                            if model_parts:
+                                data['model'] = model_parts[0]
+                                if len(model_parts) > 1 and not data['trim / sub-model']:
+                                    data['trim / sub-model'] = ' '.join(model_parts[1:])
+                        
+                        if not data['trim / sub-model'] and ('trim' in dt_text or 'sub' in dt_text):
+                            data['trim / sub-model'] = dd_text
+        
+        # Strategy 3: Look in data attributes
+        if not data['model']:
+            model_elem = soup.find(attrs=lambda x: x and any('model' in str(k).lower() for k in x.keys()))
+            if model_elem:
+                for attr, value in model_elem.attrs.items():
+                    if 'model' in attr.lower() and not 'sub' in attr.lower():
+                        data['model'] = str(value)
+                        break
+        
+        if not data['trim / sub-model']:
+            trim_elem = soup.find(attrs=lambda x: x and any('trim' in str(k).lower() or 'submodel' in str(k).lower() for k in x.keys()))
+            if trim_elem:
+                for attr, value in trim_elem.attrs.items():
+                    if 'trim' in attr.lower() or 'submodel' in attr.lower() or 'sub-model' in attr.lower():
+                        data['trim / sub-model'] = str(value)
+                        break
+        
+        # Strategy 4: Text patterns
+        if not data['model']:
+            model_match = re.search(r'Model\s*:?\s*([A-Z][\w\-]+)', page_text, re.I)
+            if model_match:
+                model_val = model_match.group(1).strip()
+                # Split if it contains trim
+                model_parts = model_val.split()
+                data['model'] = model_parts[0]
+                if len(model_parts) > 1 and not data['trim / sub-model']:
+                    data['trim / sub-model'] = ' '.join(model_parts[1:])
+        
+        if not data['trim / sub-model']:
+            trim_patterns = [
+                r'Trim\s*:?\s*([A-Z][\w\s\-]+?)(?:\s*[\|,]|$|\n)',
+                r'Sub-?Model\s*:?\s*([A-Z][\w\s\-]+?)(?:\s*[\|,]|$|\n)',
+            ]
+            for pattern in trim_patterns:
+                match = re.search(pattern, page_text, re.I)
+                if match:
+                    data['trim / sub-model'] = match.group(1).strip()
+                    break
         
         # Enhanced VIN extraction with validation
         vin_pattern = r'\b([A-HJ-NPR-Z0-9]{17})\b'
@@ -339,27 +512,125 @@ class VehicleScraper:
                     data['id / stock-#'] = stock
                     break
         
-        # Enhanced mileage extraction with better validation
-        mileage_patterns = [
-            r'(\d{1,3}(?:,\d{3})*)\s*km',
-            r'Mileage\s*:?\s*(\d{1,3}(?:,\d{3})*)',
-            r'Odometer\s*:?\s*(\d{1,3}(?:,\d{3})*)',
-        ]
-        for pattern in mileage_patterns:
-            match = re.search(pattern, page_text, re.I)
-            if match:
-                try:
-                    mileage_str = match.group(1).replace(',', '')
-                    mileage = int(mileage_str)
-                    # Validate reasonable mileage range
-                    if 0 <= mileage <= 500000:
-                        data['mileage'] = str(mileage)
-                        break
-                except ValueError:
-                    continue
+        # Enhanced mileage extraction with better validation and multiple strategies
+        mileage_found = False
+        
+        # Strategy 1: Look for mileage in structured format (table, dl, divs)
+        # Check tables first
+        for table in soup.find_all('table'):
+            for row in table.find_all('tr'):
+                cells = row.find_all(['td', 'th'])
+                if len(cells) >= 2:
+                    label = self.extract_text_safe(cells[0]).lower()
+                    if 'mileage' in label or 'odometer' in label or 'km' in label:
+                        value_text = self.extract_text_safe(cells[1])
+                        # Extract number from value
+                        num_match = re.search(r'(\d{1,3}(?:[,\s]\d{3})*|\d+)', value_text)
+                        if num_match:
+                            try:
+                                mileage_val = int(num_match.group(1).replace(',', '').replace(' ', ''))
+                                if 0 <= mileage_val <= 500000:
+                                    data['mileage'] = str(mileage_val)
+                                    mileage_found = True
+                                    break
+                            except:
+                                pass
+            if mileage_found:
+                break
+        
+        # Strategy 2: Definition lists
+        if not mileage_found:
+            for dl in soup.find_all('dl'):
+                dts = dl.find_all('dt')
+                dds = dl.find_all('dd')
+                for dt, dd in zip(dts, dds):
+                    dt_text = self.extract_text_safe(dt).lower()
+                    if 'mileage' in dt_text or 'odometer' in dt_text or 'km' in dt_text:
+                        dd_text = self.extract_text_safe(dd)
+                        num_match = re.search(r'(\d{1,3}(?:[,\s]\d{3})*|\d+)', dd_text)
+                        if num_match:
+                            try:
+                                mileage_val = int(num_match.group(1).replace(',', '').replace(' ', ''))
+                                if 0 <= mileage_val <= 500000:
+                                    data['mileage'] = str(mileage_val)
+                                    mileage_found = True
+                                    break
+                            except:
+                                pass
+                if mileage_found:
+                    break
+        
+        # Strategy 3: Data attributes
+        if not mileage_found:
+            for elem in soup.find_all(attrs=lambda x: x and any('mileage' in str(k).lower() or 'odometer' in str(k).lower() for k in x.keys())):
+                for attr, value in elem.attrs.items():
+                    if 'mileage' in attr.lower() or 'odometer' in attr.lower():
+                        try:
+                            val_str = str(value).replace(',', '').replace(' ', '')
+                            mileage_val = int(re.sub(r'[^\d]', '', val_str))
+                            if 0 <= mileage_val <= 500000:
+                                data['mileage'] = str(mileage_val)
+                                mileage_found = True
+                                break
+                        except:
+                            pass
+                if mileage_found:
+                    break
+        
+        # Strategy 4: Text patterns (with context validation)
+        if not mileage_found:
+            mileage_patterns = [
+                r'Mileage\s*:?\s*(\d{1,3}(?:[,\s]\d{3})*)\s*(?:km|kilometers?|miles?|mi)?',
+                r'Odometer\s*:?\s*(\d{1,3}(?:[,\s]\d{3})*)\s*(?:km|kilometers?)?',
+                r'(\d{1,3}(?:[,\s]\d{3})*)\s*(?:km|kilometers?)\b',
+                r'(\d{1,3}(?:[,\s]\d{3})*)\s*(?:miles?|mi)\b',
+            ]
+            
+            for pattern in mileage_patterns:
+                for match in re.finditer(pattern, page_text, re.I):
+                    try:
+                        mileage_str = match.group(1).replace(',', '').replace(' ', '')
+                        mileage_val = int(mileage_str)
+                        
+                        # Validate range
+                        if 0 <= mileage_val <= 500000:
+                            # Get context to avoid false positives
+                            context_start = max(0, match.start() - 50)
+                            context_end = min(len(page_text), match.end() + 50)
+                            context = page_text[context_start:context_end].lower()
+                            
+                            # Skip if context suggests this is not vehicle mileage
+                            if any(skip in context for skip in ['warranty', 'coverage', 'per year', 'annual', 'fuel economy', 'mpg', 'range']):
+                                continue
+                            
+                            data['mileage'] = str(mileage_val)
+                            mileage_found = True
+                            break
+                    except:
+                        pass
+                if mileage_found:
+                    break
+        
+        # Strategy 5: Look in spec divs/sections
+        if not mileage_found:
+            spec_sections = soup.find_all(['div', 'section', 'span'], 
+                                         class_=re.compile(r'spec|detail|mileage|odometer', re.I))
+            for section in spec_sections:
+                text = self.extract_text_safe(section)
+                # Look for number + km/miles pattern
+                num_match = re.search(r'\b(\d{1,3}(?:[,\s]\d{3})*)\s*(?:km|kilometers?|miles?|mi)\b', text, re.I)
+                if num_match:
+                    try:
+                        mileage_val = int(num_match.group(1).replace(',', '').replace(' ', ''))
+                        if 0 <= mileage_val <= 500000:
+                            data['mileage'] = str(mileage_val)
+                            mileage_found = True
+                            break
+                    except:
+                        pass
         
         # If new vehicle and no mileage found, set to 0
-        if data['condition'] == 'new' and not data['mileage']:
+        if not mileage_found and data['condition'] == 'new':
             data['mileage'] = '0'
         
         # Extract engine
@@ -375,37 +646,175 @@ class VehicleScraper:
                     data['engine'] = engine
                     break
         
-        # Enhanced color extraction with multiple strategies
-        # Strategy 1: Look for "Exterior Color:" pattern
+        # Enhanced color extraction with 8 comprehensive strategies
+        
+        # Strategy 1: Pattern matching in page text (more flexible)
         color_patterns = [
-            r'Exterior\s*Colou?r\s*:?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
-            r'Colou?r\s*:?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
-            r'Paint\s*:?\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',
+            r'Exterior\s*Colou?r\s*:?\s*([A-Z][\w\s\-]+?)(?:\s*[\|,]|$|\n|Interior|Engine|Transmission|Drivetrain)',
+            r'Ext\.?\s*Colou?r\s*:?\s*([A-Z][\w\s\-]+?)(?:\s*[\|,]|$|\n|Interior)',
+            r'Colou?r\s*:?\s*([A-Z][\w\s\-]+?)(?:\s*[\|,]|$|\n|Interior|Engine)',
+            r'Paint\s*Colou?r?\s*:?\s*([A-Z][\w\s\-]+?)(?:\s*[\|,]|$|\n)',
+            r'Body\s*Colou?r\s*:?\s*([A-Z][\w\s\-]+?)(?:\s*[\|,]|$|\n)',
         ]
         
         for pattern in color_patterns:
             match = re.search(pattern, page_text)
             if match:
                 color = match.group(1).strip()
-                # Validate color length
-                if 3 <= len(color) <= 30:
+                # Remove trailing words that are not part of color
+                color = re.sub(r'\s+(Interior|Transmission|Engine|Drivetrain|4WD|AWD|FWD).*$', '', color, flags=re.I)
+                color = re.sub(r'\s+', ' ', color)  # Clean whitespace
+                if 3 <= len(color) <= 40:
                     data['color'] = color
                     break
         
-        # Strategy 2: Look in HTML elements with color-related classes or IDs
+        # Strategy 2: Look in table rows (td/th)
         if not data['color']:
-            color_elements = soup.find_all(class_=re.compile(r'color|colour|exterior', re.I))
-            for elem in color_elements:
-                text = self.extract_text_safe(elem)
-                # Extract color-like text (capitalize first letter pattern)
-                color_match = re.search(r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)\b', text)
-                if color_match:
-                    potential_color = color_match.group(1)
-                    # Validate it's actually a color (not other capitalized words)
-                    if (3 <= len(potential_color) <= 30 and 
-                        potential_color.lower() not in ['new', 'used', 'toyota', 'stock', 'price']):
-                        data['color'] = potential_color
+            for table in soup.find_all('table'):
+                for row in table.find_all('tr'):
+                    cells = row.find_all(['td', 'th'])
+                    if len(cells) >= 2:
+                        label = self.extract_text_safe(cells[0]).lower()
+                        if 'color' in label or 'colour' in label or 'exterior' in label:
+                            color = self.extract_text_safe(cells[1])
+                            if 3 <= len(color) <= 40:
+                                data['color'] = color
+                                break
+                if data['color']:
+                    break
+        
+        # Strategy 3: HTML elements with color classes/IDs (improved filtering)
+        if not data['color']:
+            selectors = [
+                soup.find_all(['div', 'span', 'p', 'li', 'td', 'dd'], class_=re.compile(r'(?:ext|exterior|vehicle).*color', re.I)),
+                soup.find_all(['div', 'span', 'p', 'li', 'td', 'dd'], class_=re.compile(r'color.*(?:ext|exterior)', re.I)),
+                soup.find_all(['div', 'span', 'p', 'li', 'td', 'dd'], id=re.compile(r'color|colour', re.I))
+            ]
+            
+            for elem_list in selectors:
+                for elem in elem_list:
+                    text = self.extract_text_safe(elem)
+                    
+                    # Skip if too long or contains excluded keywords
+                    if len(text) > 60:
+                        continue
+                    
+                    # Remove label words
+                    text = re.sub(r'^(Exterior\s*)?Colou?r\s*:?\s*', '', text, flags=re.I)
+                    text = text.strip()
+                    
+                    # Extract color
+                    if text:
+                        # Exclude common non-color words
+                        excluded = ['new', 'used', 'toyota', 'honda', 'ford', 'chevrolet', 'gmc',
+                                   'stock', 'price', 'view', 'details', 'exterior', 'interior', 
+                                   'color', 'colour', 'vehicle', 'mileage', 'engine', 'transmission',
+                                   'click', 'more', 'info', 'see', 'all']
+                        
+                        if text.lower() not in excluded and 3 <= len(text) <= 40:
+                            # Validate it looks like a color (starts with capital)
+                            if text[0].isupper():
+                                data['color'] = text
+                                break
+                if data['color']:
+                    break
+        
+        # Strategy 4: Definition lists (dt/dd)
+        if not data['color']:
+            for dl in soup.find_all('dl'):
+                dts = dl.find_all('dt')
+                dds = dl.find_all('dd')
+                for dt, dd in zip(dts, dds):
+                    dt_text = self.extract_text_safe(dt).lower()
+                    if 'color' in dt_text or 'colour' in dt_text or 'exterior' in dt_text:
+                        color = self.extract_text_safe(dd)
+                        if 3 <= len(color) <= 40:
+                            data['color'] = color
+                            break
+                if data['color']:
+                    break
+        
+        # Strategy 5: Data attributes
+        if not data['color']:
+            for elem in soup.find_all(attrs=lambda x: x and any('color' in str(k).lower() for k in x.keys())):
+                for attr, value in elem.attrs.items():
+                    if 'color' in attr.lower() or 'colour' in attr.lower():
+                        val = str(value).strip()
+                        if 3 <= len(val) <= 40 and val[0].isupper():
+                            data['color'] = val
+                            break
+                if data['color']:
+                    break
+        
+        # Strategy 6: JSON-LD structured data
+        if not data['color']:
+            for script in soup.find_all('script', type='application/ld+json'):
+                try:
+                    json_data = json.loads(script.string)
+                    if isinstance(json_data, dict):
+                        for key in ['color', 'colour', 'exteriorColor', 'vehicleColor', 'bodyColor']:
+                            if key in json_data and json_data[key]:
+                                data['color'] = str(json_data[key])
+                                break
+                except:
+                    pass
+                if data['color']:
+                    break
+        
+        # Strategy 7: Meta tags
+        if not data['color']:
+            for meta in soup.find_all('meta'):
+                prop = meta.get('property', '') or meta.get('name', '')
+                if 'color' in prop.lower():
+                    val = meta.get('content', '').strip()
+                    if 3 <= len(val) <= 40:
+                        data['color'] = val
                         break
+        
+        # Strategy 8: Expanded common color name matching in spec sections
+        if not data['color']:
+            common_colors = [
+                # Basic colors
+                'White', 'Black', 'Silver', 'Gray', 'Grey', 'Red', 'Blue', 'Green',
+                'Yellow', 'Orange', 'Brown', 'Beige', 'Tan', 'Gold', 'Bronze', 
+                'Burgundy', 'Maroon', 'Navy', 'Purple', 'Charcoal', 'Graphite',
+                # Extended colors
+                'Pearl White', 'Jet Black', 'Midnight Black', 'Super White', 
+                'Magnetic Gray', 'Magnetic Grey', 'Celestial Silver', 'Ruby Red', 
+                'Blueprint', 'Supersonic Red', 'Wind Chill Pearl', 'Lunar Rock', 
+                'Ice Cap', 'Blizzard Pearl', 'Cavalry Blue', 'Army Green',
+                'Cement', 'Barcelona Red', 'Voodoo Blue', 'Quicksand', 
+                'Predawn Gray', 'Midnight Black Metallic', 'Supersonic Silver',
+                'Magnetic Gray Metallic', 'Blueprint Pearl', 'Ice Edge',
+                # Toyota specific
+                'Super White', 'Blizzard Pearl', 'Wind Chill Pearl', 'Celestial Silver Metallic',
+                'Magnetic Gray Metallic', 'Predawn Gray Mica', 'Midnight Black Metallic',
+                'Ruby Flare Pearl', 'Supersonic Red', 'Blue Crush Metallic',
+                'Cavalry Blue', 'Lunar Rock', 'Ice Cap', 'Cement',
+                # Common multi-word colors
+                'Oxford White', 'Agate Black', 'Iconic Silver', 'Rapid Red',
+                'Carbonized Gray', 'Antimatter Blue', 'Atlas Blue', 'Race Red',
+                'Velocity Blue', 'Shadow Black', 'Stone Gray', 'Deep Crystal Blue',
+                'Crystal Black', 'Modern Steel', 'Obsidian Blue', 'Sonic Gray'
+            ]
+            
+            # Sort by length (longest first) to match multi-word colors first
+            common_colors.sort(key=len, reverse=True)
+            
+            # Search in spec sections and entire page
+            search_areas = soup.find_all(['div', 'section', 'table', 'dl', 'ul'], 
+                                        class_=re.compile(r'spec|detail|info|feature|attribute', re.I))
+            search_areas.append(soup)  # Also search entire page
+            
+            for section in search_areas:
+                section_text = section.get_text()
+                for color_name in common_colors:
+                    # Use word boundary to avoid partial matches
+                    if re.search(r'\b' + re.escape(color_name) + r'\b', section_text, re.I):
+                        data['color'] = color_name
+                        break
+                if data['color']:
+                    break
         
         # Extract body style
         body_styles = ['Sedan', 'SUV', 'Truck', 'Coupe', 'Hatchback', 'Wagon',
