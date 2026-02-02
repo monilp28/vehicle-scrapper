@@ -66,7 +66,17 @@ class VehicleScraper:
                     full_url = urljoin(self.base_url, href)
                     # Clean URL (remove query params and fragments)
                     clean_url = full_url.split('?')[0].split('#')[0]
-                    links.add(clean_url)
+                    
+                    # Validate: URL should have content after /inventory/
+                    # e.g., https://example.com/inventory/vehicle-123
+                    # not just https://example.com/inventory/ or https://example.com/inventory
+                    if clean_url.rstrip('/').endswith('/inventory'):
+                        continue  # Skip invalid URLs
+                    
+                    # Check that there's actually a path after /inventory/
+                    parts = clean_url.rstrip('/').split('/inventory/')
+                    if len(parts) > 1 and parts[1]:  # Has content after /inventory/
+                        links.add(clean_url)
         
         return list(links)
     
@@ -450,7 +460,7 @@ class VehicleScraper:
         
         # Strategy 3: Look in data attributes
         if not data['model']:
-            model_elem = soup.find(attrs=lambda x: x and any('model' in str(k).lower() for k in x.keys()))
+            model_elem = soup.find(attrs=lambda x: isinstance(x, dict) and any('model' in str(k).lower() for k in x.keys()))
             if model_elem:
                 for attr, value in model_elem.attrs.items():
                     if 'model' in attr.lower() and not 'sub' in attr.lower():
@@ -458,7 +468,7 @@ class VehicleScraper:
                         break
         
         if not data['trim / sub-model']:
-            trim_elem = soup.find(attrs=lambda x: x and any('trim' in str(k).lower() or 'submodel' in str(k).lower() for k in x.keys()))
+            trim_elem = soup.find(attrs=lambda x: isinstance(x, dict) and any('trim' in str(k).lower() or 'submodel' in str(k).lower() for k in x.keys()))
             if trim_elem:
                 for attr, value in trim_elem.attrs.items():
                     if 'trim' in attr.lower() or 'submodel' in attr.lower() or 'sub-model' in attr.lower():
@@ -562,7 +572,7 @@ class VehicleScraper:
         
         # Strategy 3: Data attributes
         if not mileage_found:
-            for elem in soup.find_all(attrs=lambda x: x and any('mileage' in str(k).lower() or 'odometer' in str(k).lower() for k in x.keys())):
+            for elem in soup.find_all(attrs=lambda x: isinstance(x, dict) and any('mileage' in str(k).lower() or 'odometer' in str(k).lower() for k in x.keys())):
                 for attr, value in elem.attrs.items():
                     if 'mileage' in attr.lower() or 'odometer' in attr.lower():
                         try:
@@ -736,7 +746,7 @@ class VehicleScraper:
         
         # Strategy 5: Data attributes
         if not data['color']:
-            for elem in soup.find_all(attrs=lambda x: x and any('color' in str(k).lower() for k in x.keys())):
+            for elem in soup.find_all(attrs=lambda x: isinstance(x, dict) and any('color' in str(k).lower() for k in x.keys())):
                 for attr, value in elem.attrs.items():
                     if 'color' in attr.lower() or 'colour' in attr.lower():
                         val = str(value).strip()
