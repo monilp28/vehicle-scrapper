@@ -2,6 +2,7 @@
 """
 Comprehensive Vehicle Scraper for Red Deer Toyota
 Extracts all required fields from vehicle detail pages
+Fixed to handle 403 Forbidden and anti-bot measures
 """
 
 import requests
@@ -11,6 +12,7 @@ from urllib.parse import urljoin
 import re
 import json
 import logging
+import random
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
@@ -22,28 +24,80 @@ class VehicleScraper:
     def __init__(self):
         self.base_url = "https://www.reddeertoyota.com"
         self.session = requests.Session()
+        
+        # Use more realistic headers to avoid bot detection
+        # Updated User-Agent (Chrome 123) and added security headers
         self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
+            'DNT': '1',
+            'Referer': 'https://www.reddeertoyota.com/',
         })
+        
+        # Enable cookie jar for session persistence
+        self.session.cookies.clear()
     
     def get_page(self, url, retries=3):
-        """Fetch page with retry logic"""
+        """Fetch page with retry logic and better error handling"""
         for attempt in range(retries):
             try:
                 logger.info(f"  Fetching: {url}")
-                response = self.session.get(url, timeout=30)
-                response.raise_for_status()
-                return BeautifulSoup(response.content, 'html.parser')
+                
+                # Add random delay to avoid rate limiting
+                time.sleep(random.uniform(1, 3))
+                
+                # Make request with proper timeout and allow redirects
+                response = self.session.get(
+                    url, 
+                    timeout=30,
+                    allow_redirects=True,
+                    verify=True
+                )
+                
+                # Check for successful response
+                if response.status_code == 200:
+                    return BeautifulSoup(response.content, 'html.parser')
+                elif response.status_code == 403:
+                    logger.error(f"  Error: 403 Forbidden - Website is blocking requests")
+                    logger.error(f"  Attempt {attempt + 1}/{retries}: Access denied")
+                    # Wait longer before retry
+                    if attempt < retries - 1:
+                        wait_time = 5 * (attempt + 2)
+                        logger.info(f"  Waiting {wait_time}s before retry...")
+                        time.sleep(wait_time)
+                elif response.status_code == 429:
+                    logger.error(f"  Error: 429 Too Many Requests - Rate limited")
+                    if attempt < retries - 1:
+                        wait_time = 10 * (attempt + 1)
+                        logger.info(f"  Waiting {wait_time}s before retry...")
+                        time.sleep(wait_time)
+                else:
+                    logger.error(f"  Error: {response.status_code} {response.reason}")
+                    response.raise_for_status()
+                    
+            except requests.exceptions.Timeout:
+                logger.error(f"  Error: Request timeout")
+                if attempt < retries - 1:
+                    time.sleep(5 * (attempt + 1))
+            except requests.exceptions.ConnectionError:
+                logger.error(f"  Error: Connection failed")
+                if attempt < retries - 1:
+                    time.sleep(5 * (attempt + 1))
             except requests.exceptions.RequestException as e:
                 logger.error(f"  Error: {e}")
                 if attempt < retries - 1:
                     time.sleep(2 * (attempt + 1))
-                else:
-                    return None
+        
+        logger.error(f"  Failed to fetch after {retries} attempts")
         return None
     
     def extract_text_safe(self, element, default=''):
@@ -979,7 +1033,7 @@ class VehicleScraper:
                 links = self.extract_vehicle_links(soup)
                 all_links.update(links)
                 logger.info(f"  → Found {len(links)} vehicles\n")
-            time.sleep(1)
+            time.sleep(random.uniform(2, 4))
         
         logger.info(f"{'='*100}")
         logger.info(f"Total unique vehicles: {len(all_links)}")
@@ -995,7 +1049,7 @@ class VehicleScraper:
             vehicle = self.scrape_vehicle(url)
             if vehicle:
                 all_vehicles.append(vehicle)
-            time.sleep(1.5)
+            time.sleep(random.uniform(2, 4))
         
         logger.info(f"\n{'='*100}")
         logger.info(f"COMPLETE: Scraped {len(all_vehicles)} vehicles")
