@@ -1,4 +1,3 @@
-
 name: Scrape Vehicle Inventory
 
 on:
@@ -14,11 +13,15 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+      with:
+        # Ensure we get the latest version compatible with Node.js 24
+        persist-credentials: false
     
     - name: Set up Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
+        cache: 'pip'
     
     - name: Cache pip dependencies
       uses: actions/cache@v4
@@ -33,13 +36,25 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
     
-    - name: Run scraper
+    - name: Run scraper with retry logic
       env:
         GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
         GOOGLE_SHEET_ID: ${{ secrets.GOOGLE_SHEET_ID }}
         PYTHONPATH: ${{ github.workspace }}
       run: |
-        python scraper/main.py
+        # Try up to 3 times with delays
+        for attempt in {1..3}; do
+          echo "Scraping attempt $attempt of 3..."
+          python scraper/main.py && exit 0
+          
+          if [ $attempt -lt 3 ]; then
+            echo "Attempt $attempt failed. Waiting before retry..."
+            sleep $((attempt * 60))  # Wait 1-2 minutes between retries
+          fi
+        done
+        
+        echo "All scraping attempts failed"
+        exit 1
     
     - name: Upload artifacts
       if: always()
