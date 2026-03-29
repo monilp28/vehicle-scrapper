@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 """
 Comprehensive Vehicle Scraper for Red Deer Toyota
-Using CloudScraper to bypass CloudFlare protection
+Extracts all required fields from vehicle detail pages
 """
 
-import cloudscraper
+import requests
 from bs4 import BeautifulSoup
 import time
 from urllib.parse import urljoin
 import re
 import json
 import logging
-import random
 
 logging.basicConfig(level=logging.INFO, format='%(message)s')
 logger = logging.getLogger(__name__)
@@ -22,71 +21,29 @@ class VehicleScraper:
     
     def __init__(self):
         self.base_url = "https://www.reddeertoyota.com"
-        
-        # Use CloudScraper to bypass CloudFlare protection
-        self.session = cloudscraper.create_scraper()
-        
-        # CloudScraper handles most headers automatically,
-        # but we can customize additional ones
+        self.session = requests.Session()
         self.session.headers.update({
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9',
             'Accept-Encoding': 'gzip, deflate, br',
             'Connection': 'keep-alive',
-            'Referer': 'https://www.reddeertoyota.com/',
-            'DNT': '1',
         })
     
     def get_page(self, url, retries=3):
-        """Fetch page with CloudScraper and retry logic"""
+        """Fetch page with retry logic"""
         for attempt in range(retries):
             try:
                 logger.info(f"  Fetching: {url}")
-                
-                # Add random delay to avoid rate limiting
-                time.sleep(random.uniform(1, 3))
-                
-                # Make request with CloudScraper (handles CloudFlare)
-                response = self.session.get(
-                    url, 
-                    timeout=30,
-                    allow_redirects=True,
-                    verify=True
-                )
-                
-                # Check for successful response
-                if response.status_code == 200:
-                    return BeautifulSoup(response.content, 'html.parser')
-                elif response.status_code == 403:
-                    logger.error(f"  Error: 403 Forbidden - Website is blocking requests")
-                    logger.error(f"  Attempt {attempt + 1}/{retries}: Access denied")
-                    # Wait longer before retry
-                    if attempt < retries - 1:
-                        wait_time = 5 * (attempt + 2)
-                        logger.info(f"  Waiting {wait_time}s before retry...")
-                        time.sleep(wait_time)
-                elif response.status_code == 429:
-                    logger.error(f"  Error: 429 Too Many Requests - Rate limited")
-                    if attempt < retries - 1:
-                        wait_time = 10 * (attempt + 1)
-                        logger.info(f"  Waiting {wait_time}s before retry...")
-                        time.sleep(wait_time)
+                response = self.session.get(url, timeout=30)
+                response.raise_for_status()
+                return BeautifulSoup(response.content, 'html.parser')
+            except requests.exceptions.RequestException as e:
+                logger.error(f"  Error: {e}")
+                if attempt < retries - 1:
+                    time.sleep(2 * (attempt + 1))
                 else:
-                    logger.error(f"  Error: {response.status_code} {response.reason}")
-                    response.raise_for_status()
-                    
-            except cloudscraper.exceptions.CloudflareException as e:
-                logger.error(f"  CloudFlare Error: {e}")
-                if attempt < retries - 1:
-                    wait_time = 10 * (attempt + 1)
-                    logger.info(f"  Waiting {wait_time}s before retry...")
-                    time.sleep(wait_time)
-            except Exception as e:
-                logger.error(f"  Error: {type(e).__name__}: {e}")
-                if attempt < retries - 1:
-                    time.sleep(5 * (attempt + 1))
-        
-        logger.error(f"  Failed to fetch after {retries} attempts")
+                    return None
         return None
     
     def extract_text_safe(self, element, default=''):
@@ -381,71 +338,117 @@ class VehicleScraper:
         if year_match:
             data['year'] = year_match.group(1)
         
-        # Determine condition from URL
+        # Determine condition from URL - ensure it's set
         if '/new/' in url.lower():
             data['condition'] = 'new'
         elif '/used/' in url.lower():
             data['condition'] = 'used'
         
-        # Fallback strategies for condition
+        # Fallback strategies for condition if URL doesn't contain it
         if not data['condition']:
+            # Look for condition in text
             condition_match = re.search(r'Condition\s*:?\s*(New|Used)', page_text, re.I)
             if condition_match:
                 data['condition'] = condition_match.group(1).lower()
+            # Check data attributes
             elif soup.find(attrs={'data-condition': True}):
                 cond_elem = soup.find(attrs={'data-condition': True})
                 data['condition'] = cond_elem.get('data-condition', '').lower()
+            # Check for "New Vehicle" or "Used Vehicle"
             elif re.search(r'\bNew\s+Vehicle\b', page_text, re.I):
                 data['condition'] = 'new'
             elif re.search(r'\bUsed\s+Vehicle\b', page_text, re.I):
                 data['condition'] = 'used'
         
-        # Brand extraction
+        # Enhanced brand extraction from title AND page text
         brands = ['Toyota', 'Honda', 'Ford', 'Chevrolet', 'Chevy', 'GMC', 'Dodge', 'Ram',
                  'Nissan', 'Hyundai', 'Kia', 'Mazda', 'Subaru', 'Jeep', 'Acura',
                  'Cadillac', 'Buick', 'Lexus', 'Lincoln', 'Volkswagen', 'VW', 'Audi',
                  'BMW', 'Mercedes', 'Mercedes-Benz', 'Volvo', 'Mitsubishi', 'Infiniti']
         
+        # Try title first
         title_lower = (data['title'] or '').lower()
         for brand in brands:
             if brand.lower() in title_lower:
                 data['brand'] = 'Chevrolet' if brand == 'Chevy' else brand
                 break
         
+        # If brand not found in title, search page text
         if not data['brand']:
             for brand in brands:
                 if re.search(r'\bMake\s*:?\s*' + re.escape(brand), page_text, re.I):
                     data['brand'] = 'Chevrolet' if brand == 'Chevy' else brand
                     break
         
-        # Model and trim extraction
+        # If still not found, look for brand in meta tags or structured data
+        if not data['brand']:
+            for meta in soup.find_all('meta'):
+                content = meta.get('content', '').lower()
+                for brand in brands:
+                    if brand.lower() in content:
+                        data['brand'] = 'Chevrolet' if brand == 'Chevy' else brand
+                        break
+                if data['brand']:
+                    break
+        
+        # Enhanced model and trim extraction with multiple strategies
+        
+        # Strategy 1: Parse from title
         if data['title']:
             remaining = data['title']
+            # Remove year
             if data['year']:
                 remaining = remaining.replace(data['year'], '').strip()
+            # Remove brand
             if data['brand']:
                 remaining = re.sub(r'\b' + re.escape(data['brand']) + r'\b', '', 
                                  remaining, flags=re.I).strip()
             
+            # Clean up remaining text
             remaining = ' '.join(remaining.split())
             parts = remaining.split()
             
             if parts:
+                # First part is the model
                 data['model'] = parts[0]
+                
+                # Everything else is trim/sub-model
                 if len(parts) > 1:
                     data['trim / sub-model'] = ' '.join(parts[1:])
         
-        # VIN extraction
+        # Strategy 2: Look for model and trim in structured data
+        if not data['model'] or not data['trim / sub-model']:
+            # Check tables
+            for table in soup.find_all('table'):
+                for row in table.find_all('tr'):
+                    cells = row.find_all(['td', 'th'])
+                    if len(cells) >= 2:
+                        label = self.extract_text_safe(cells[0]).lower()
+                        value = self.extract_text_safe(cells[1])
+                        
+                        if not data['model'] and 'model' in label:
+                            # Model might include trim, split it
+                            model_parts = value.split()
+                            if model_parts:
+                                data['model'] = model_parts[0]
+                                if len(model_parts) > 1 and not data['trim / sub-model']:
+                                    data['trim / sub-model'] = ' '.join(model_parts[1:])
+                        
+                        if not data['trim / sub-model'] and ('trim' in label or 'sub-model' in label or 'submodel' in label):
+                            data['trim / sub-model'] = value
+        
+        # Extract VIN
         vin_pattern = r'\b([A-HJ-NPR-Z0-9]{17})\b'
         vin_match = re.search(vin_pattern, page_text)
         if vin_match:
             potential_vin = vin_match.group(1).upper()
+            # Validate VIN (no I, O, Q allowed, must be exactly 17 chars)
             if (len(potential_vin) == 17 and 
                 potential_vin.isalnum() and 
                 not any(char in potential_vin for char in ['I', 'O', 'Q'])):
                 data['vin'] = potential_vin
         
-        # Stock number extraction
+        # Extract stock number
         stock_patterns = [
             r'Stock\s*#?\s*:?\s*([A-Z0-9-]+)',
             r'Stk\s*#?\s*:?\s*([A-Z0-9-]+)',
@@ -459,7 +462,7 @@ class VehicleScraper:
                     data['id / stock-#'] = stock
                     break
         
-        # Mileage extraction
+        # Extract mileage
         mileage_found = False
         
         for table in soup.find_all('table'):
@@ -469,6 +472,7 @@ class VehicleScraper:
                     label = self.extract_text_safe(cells[0]).lower()
                     if 'mileage' in label or 'odometer' in label or 'km' in label:
                         value_text = self.extract_text_safe(cells[1])
+                        # Extract number from value
                         num_match = re.search(r'(\d{1,3}(?:[,\s]\d{3})*|\d+)', value_text)
                         if num_match:
                             try:
@@ -482,10 +486,11 @@ class VehicleScraper:
             if mileage_found:
                 break
         
+        # If new vehicle and no mileage found, set to 0
         if not mileage_found and data['condition'] == 'new':
             data['mileage'] = '0'
         
-        # Engine extraction
+        # Extract engine
         engine_patterns = [
             r'(\d\.\d+L?\s*(?:V\d+|I\d+|Hybrid|Turbo|EcoBoost))',
             r'Engine\s*:?\s*([^\n]{5,40})',
@@ -498,7 +503,7 @@ class VehicleScraper:
                     data['engine'] = engine
                     break
         
-        # Color extraction
+        # Extract color
         color_patterns = [
             r'Exterior\s*Colou?r\s*:?\s*([A-Z][\w\s\-]+?)(?:\s*[\|,]|$|\n|Interior|Engine|Transmission|Drivetrain)',
             r'Ext\.?\s*Colou?r\s*:?\s*([A-Z][\w\s\-]+?)(?:\s*[\|,]|$|\n|Interior)',
@@ -511,13 +516,14 @@ class VehicleScraper:
             match = re.search(pattern, page_text)
             if match:
                 color = match.group(1).strip()
+                # Remove trailing words that are not part of color
                 color = re.sub(r'\s+(Interior|Transmission|Engine|Drivetrain|4WD|AWD|FWD).*$', '', color, flags=re.I)
-                color = re.sub(r'\s+', ' ', color)
+                color = re.sub(r'\s+', ' ', color)  # Clean whitespace
                 if 3 <= len(color) <= 40:
                     data['color'] = color
                     break
         
-        # Body style extraction
+        # Extract body style
         body_styles = ['Sedan', 'SUV', 'Truck', 'Coupe', 'Hatchback', 'Wagon',
                       'Van', 'Convertible', 'Crossover', 'Pickup']
         for style in body_styles:
@@ -525,29 +531,33 @@ class VehicleScraper:
                 data['body style'] = style
                 break
         
-        # Price extraction
+        # Extract prices (raw numbers, will add $ later)
         price_raw = self.extract_price(soup)
         msrp_raw = self.extract_msrp(soup)
         
+        # Add $ prefix to prices
         if price_raw:
             data['price'] = f"${price_raw}"
         if msrp_raw:
             data['vehicle MSRP'] = f"${msrp_raw}"
         
+        # Validate price relationship
         if price_raw and msrp_raw:
             try:
                 if int(msrp_raw) < int(price_raw):
+                    # Swap them
                     data['price'] = f"${msrp_raw}"
                     data['vehicle MSRP'] = f"${price_raw}"
             except ValueError:
                 pass
         
+        # All-in price typically same as price
         data['vehicle all in price'] = data['price']
         
-        # Image extraction
+        # Extract image
         data['image link'] = self.extract_image(soup)
         
-        # Description extraction
+        # Extract description
         desc_elem = (soup.find('meta', {'name': 'description'}) or 
                     soup.find('meta', {'property': 'og:description'}))
         if desc_elem:
@@ -555,7 +565,7 @@ class VehicleScraper:
             if len(desc) > 20:
                 data['description'] = desc[:500]
         
-        # CPO check
+        # Check for CPO
         if re.search(r'\bcertified\b.*\bpre-owned\b', page_text, re.I):
             data['certified pre-owned'] = 'yes'
         
@@ -582,7 +592,7 @@ class VehicleScraper:
                 links = self.extract_vehicle_links(soup)
                 all_links.update(links)
                 logger.info(f"  → Found {len(links)} vehicles\n")
-            time.sleep(random.uniform(2, 4))
+            time.sleep(1)
         
         logger.info(f"{'='*100}")
         logger.info(f"Total unique vehicles: {len(all_links)}")
@@ -598,7 +608,7 @@ class VehicleScraper:
             vehicle = self.scrape_vehicle(url)
             if vehicle:
                 all_vehicles.append(vehicle)
-            time.sleep(random.uniform(2, 4))
+            time.sleep(1.5)
         
         logger.info(f"\n{'='*100}")
         logger.info(f"COMPLETE: Scraped {len(all_vehicles)} vehicles")
